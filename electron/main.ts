@@ -12,7 +12,7 @@ import {
 } from './db';
 import PDFDocument from 'pdfkit';
 import archiver from 'archiver';
-import * as XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
 import { pathToFileURL } from 'url';
 
 // Register custom protocols
@@ -42,9 +42,9 @@ function createWindow() {
   });
 
   if (app.isPackaged) {
-    mainWindow.loadURL('app://idmaker');
+    mainWindow.loadURL('app://idmaker/studio');
   } else {
-    mainWindow.loadURL('http://localhost:3000');
+    mainWindow.loadURL('http://localhost:3000/studio');
     mainWindow.webContents.openDevTools();
   }
 }
@@ -261,7 +261,7 @@ ipcMain.handle('files:selectExcel', async () => {
   const res = await dialog.showOpenDialog(mainWindow, {
     properties: ['openFile'],
     filters: [
-      { name: 'Excel Files', extensions: ['xlsx', 'xls', 'csv'] }
+      { name: 'Spreadsheet Files', extensions: ['xlsx', 'csv'] }
     ]
   });
   if (res.canceled) return null;
@@ -270,11 +270,67 @@ ipcMain.handle('files:selectExcel', async () => {
 
 ipcMain.handle('files:readExcel', async (_, filePath: string) => {
   try {
-    const workbook = XLSX.readFile(filePath);
-    const sheetName = workbook.SheetNames[0];
-    const worksheet = workbook.Sheets[sheetName];
-    const data = XLSX.utils.sheet_to_json(worksheet);
-    const headers = XLSX.utils.sheet_to_json(worksheet, { header: 1 })[0] as string[];
+    const workbook = new ExcelJS.Workbook();
+    const ext = path.extname(filePath).toLowerCase();
+    if (ext === '.csv') {
+      await workbook.csv.readFile(filePath);
+    } else {
+      await workbook.xlsx.readFile(filePath);
+    }
+
+    const worksheet = workbook.worksheets[0];
+    if (!worksheet) {
+      return { data: [], headers: [] };
+    }
+
+    const stringifyCell = (value: ExcelJS.CellValue): string => {
+      if (value === null || value === undefined) return '';
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+        return String(value);
+      }
+      if (value instanceof Date) {
+        return value.toISOString();
+      }
+      if (typeof value === 'object') {
+        if ('text' in value && typeof value.text === 'string') return value.text;
+        if ('result' in value && value.result !== undefined && value.result !== null) return String(value.result);
+        if ('hyperlink' in value && typeof value.hyperlink === 'string') return value.hyperlink;
+        if ('richText' in value && Array.isArray(value.richText)) {
+          return value.richText.map(part => part.text).join('');
+        }
+      }
+      return '';
+    };
+
+    const headerRow = worksheet.getRow(1);
+    const headers: string[] = [];
+    let lastColumn = headerRow.cellCount;
+    if (lastColumn === 0) {
+      lastColumn = worksheet.columnCount;
+    }
+
+    for (let col = 1; col <= lastColumn; col++) {
+      const raw = stringifyCell(headerRow.getCell(col).value);
+      headers.push(raw.trim() || `Column${col}`);
+    }
+
+    const data: Record<string, string>[] = [];
+    for (let rowIndex = 2; rowIndex <= worksheet.rowCount; rowIndex++) {
+      const row = worksheet.getRow(rowIndex);
+      const record: Record<string, string> = {};
+      let hasValue = false;
+      for (let col = 1; col <= headers.length; col++) {
+        const value = stringifyCell(row.getCell(col).value);
+        if (value !== '') {
+          hasValue = true;
+        }
+        record[headers[col - 1]] = value;
+      }
+      if (hasValue) {
+        data.push(record);
+      }
+    }
+
     return { data, headers };
   } catch (err: any) {
     console.error('Error reading Excel:', err);

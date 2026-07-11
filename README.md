@@ -20,6 +20,30 @@ npm run dev
 npm run build
 ```
 
+## Public Website (Landing + Download)
+
+The homepage route (`/`) is now a public landing page. The app workspace is available at `/studio`.
+
+To configure the **Download App** button on the landing page, set:
+
+```bash
+NEXT_PUBLIC_DOWNLOAD_URL=https://your-hosted-installer-url
+```
+
+For the **Releases** section on the landing page, optionally set:
+
+```bash
+NEXT_PUBLIC_LATEST_VERSION=v1.0.0
+NEXT_PUBLIC_INSTALLER_SIZE=141.5 MB
+NEXT_PUBLIC_RELEASE_NOTES_URL=https://your-release-notes-url
+```
+
+If not set, it defaults to:
+
+```bash
+/downloads/ID Maker Setup 1.0.0.exe
+```
+
 ## Package Desktop App
 
 ```bash

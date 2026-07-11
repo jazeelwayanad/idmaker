@@ -73,7 +73,7 @@ export default function ExcelImport() {
       setShowFieldPicker(true);
     } catch (err) {
       console.error(err);
-      alert('Failed to parse Excel file. Ensure it is valid .xlsx, .xls or .csv');
+      alert('Failed to parse spreadsheet file. Ensure it is valid .xlsx or .csv');
     } finally {
       setIsProcessing(false);
     }
