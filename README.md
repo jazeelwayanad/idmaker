@@ -42,6 +42,8 @@ For the **Releases** section on the landing page, optionally set:
 NEXT_PUBLIC_LATEST_VERSION=v1.0.0
 NEXT_PUBLIC_INSTALLER_SIZE=141.5 MB
 NEXT_PUBLIC_RELEASE_NOTES_URL=https://your-release-notes-url
+NEXT_PUBLIC_CONTRIBUTE_URL=https://your-contributing-guide-url
+NEXT_PUBLIC_COFFEE_URL=https://your-support-link
 ```
 
 If not set, it defaults to:

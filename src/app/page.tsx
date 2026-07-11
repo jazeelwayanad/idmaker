@@ -4,8 +4,9 @@ const downloadUrl = process.env.NEXT_PUBLIC_DOWNLOAD_URL ?? '/downloads/ID Maker
 const downloadTarget = downloadUrl.startsWith('http');
 const latestVersion = process.env.NEXT_PUBLIC_LATEST_VERSION ?? 'v1.0.0';
 const installerSize = process.env.NEXT_PUBLIC_INSTALLER_SIZE ?? '141.5 MB';
-const releaseNotesUrl = process.env.NEXT_PUBLIC_RELEASE_NOTES_URL ?? '#';
+const releaseNotesUrl = process.env.NEXT_PUBLIC_RELEASE_NOTES_URL ?? 'https://github.com/jazeelwayanad/idmaker/releases';
 const releaseNotesTarget = releaseNotesUrl.startsWith('http');
+const contributeUrl = process.env.NEXT_PUBLIC_CONTRIBUTE_URL ?? 'https://github.com/jazeelwayanad/idmaker/blob/main/CONTRIBUTING.md';
 
 const features = [
   {
@@ -50,16 +51,21 @@ export default function HomePage() {
               Download App
             </a>
             <a
-              href="/studio"
+              href={contributeUrl}
+              target="_blank"
+              rel="noreferrer"
               className="inline-flex items-center gap-2 rounded-xl border border-zinc-700 px-5 py-3 text-sm font-bold text-zinc-200 transition hover:border-zinc-500 hover:bg-zinc-800/60"
             >
-              Open Web Demo
+              Contribute Now
               <ExternalLink className="h-4 w-4" />
             </a>
+            <a
+              href="/coffee"
+              className="inline-flex items-center gap-2 rounded-xl border border-zinc-700 px-5 py-3 text-sm font-bold text-zinc-200 transition hover:border-zinc-500 hover:bg-zinc-800/60"
+            >
+              Give Me a Coffee
+            </a>
           </div>
-          <p className="mt-4 text-xs text-zinc-500">
-            Tip: Set <code className="text-zinc-400">NEXT_PUBLIC_DOWNLOAD_URL</code> to your hosted installer URL for production deployments.
-          </p>
         </div>
       </section>
 
@@ -104,9 +110,6 @@ export default function HomePage() {
               </a>
             </div>
           </div>
-          <p className="mt-4 text-xs text-zinc-500">
-            Configure with <code className="text-zinc-400">NEXT_PUBLIC_LATEST_VERSION</code>, <code className="text-zinc-400">NEXT_PUBLIC_INSTALLER_SIZE</code>, and <code className="text-zinc-400">NEXT_PUBLIC_RELEASE_NOTES_URL</code>.
-          </p>
         </div>
       </section>
     </main>
