@@ -14,10 +14,16 @@ npm install
 npm run dev
 ```
 
-## Build
+## Build Website
 
 ```bash
 npm run build
+```
+
+## Build Desktop App
+
+```bash
+npm run build:desktop
 ```
 
 ## Public Website (Landing + Download)

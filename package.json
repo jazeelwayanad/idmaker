@@ -4,11 +4,12 @@
   "description": "Bulk ID Card Production System",
   "main": "build-electron/electron/main.js",
   "scripts": {
-    "dev": "concurrently \".\\node_modules\\.bin\\next dev -p 3000\" \"wait-on http://127.0.0.1:3000 && .\\node_modules\\.bin\\electron .\"",
-    "build": ".\\node_modules\\.bin\\next build && .\\node_modules\\.bin\\tsc --project tsconfig.electron.json",
-    "start": ".\\node_modules\\.bin\\electron .",
-    "pack": "electron-builder --dir",
-    "dist": "electron-builder"
+    "dev": "concurrently \"next dev -p 3000\" \"wait-on http://127.0.0.1:3000 && electron .\"",
+    "build": "next build",
+    "build:desktop": "next build && tsc --project tsconfig.electron.json",
+    "start": "electron .",
+    "pack": "npm run build:desktop && electron-builder --dir",
+    "dist": "npm run build:desktop && electron-builder"
   },
   "author": {
     "name": "Eucodes",
