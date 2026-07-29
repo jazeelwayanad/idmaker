@@ -177,6 +177,15 @@ export default function ExcelImport() {
   const missingNameCount = students.filter(s => {
     try { return JSON.parse(s.errors || '[]').includes('Missing Name'); } catch { return false; }
   }).length;
+  const seenRegisterNumbers = new Set<string>();
+  const duplicateRegisterNumbers = new Set<string>();
+  students.forEach((student) => {
+    const registerNo = student.registerNo.trim().toLocaleLowerCase();
+    if (!registerNo) return;
+    if (seenRegisterNumbers.has(registerNo)) duplicateRegisterNumbers.add(registerNo);
+    seenRegisterNumbers.add(registerNo);
+  });
+  const duplicateRegisterCount = duplicateRegisterNumbers.size;
 
   const dataColumns = activeStudents.length > 0
     ? Object.keys(activeStudents[0].parsedData || {}).filter(k => !['errors', 'photoPath', 'registerNo', 'name'].includes(k))
@@ -358,6 +367,12 @@ export default function ExcelImport() {
                   <span className="text-zinc-400">Records with Empty Fields</span>
                   <span className={`px-2 py-0.5 rounded font-semibold ${invalidStudentsCount > 0 ? 'bg-red-500/10 text-red-400' : 'bg-zinc-800 text-zinc-500'}`}>
                     {invalidStudentsCount}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between p-2.5 bg-dark-800 border border-zinc-800 rounded-lg text-xs">
+                  <span className="text-zinc-400">Duplicate Register Numbers</span>
+                  <span className={`px-2 py-0.5 rounded font-semibold ${duplicateRegisterCount > 0 ? 'bg-amber-500/10 text-amber-400' : 'bg-zinc-800 text-zinc-500'}`}>
+                    {duplicateRegisterCount}
                   </span>
                 </div>
                 {invalidStudentsCount > 0 && (

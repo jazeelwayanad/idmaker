@@ -79,7 +79,7 @@ app.whenReady().then(() => {
   });
 
   // Handle local-photo:// protocol requests
-  protocol.handle('local-photo', (request) => {
+  protocol.handle('local-photo', async (request) => {
     try {
       let filePath = new URL(request.url).pathname;
       filePath = decodeURIComponent(filePath);
@@ -87,7 +87,16 @@ app.whenReady().then(() => {
       if (filePath.startsWith('/') && filePath[2] === ':') {
         filePath = filePath.substring(1);
       }
-      return net.fetch(pathToFileURL(filePath).toString());
+      const response = await net.fetch(pathToFileURL(filePath).toString());
+      // Expose CORS header so images can be loaded with crossOrigin="anonymous"
+      // and NOT taint the canvas (required for toDataURL export).
+      const headers = new Headers(response.headers);
+      headers.set('Access-Control-Allow-Origin', '*');
+      return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers
+      });
     } catch (err) {
       console.error('Failed to handle local-photo protocol:', err);
       return new Response('Not Found', { status: 404 });

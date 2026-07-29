@@ -1,6 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useStore, Template } from '../hooks/useStore';
+import { loadTemplateToCanvas } from '../utils/canvasHelper';
 import * as fabric from 'fabric';
+import { 
+  Square, Type, Image as ImageIcon, AlignLeft, AlignCenter, AlignRight, AlignJustify,
+  Trash2, RotateCw, Copy, Layers, Save, Undo, Redo, Columns, CheckSquare, Upload,
+  Settings, Maximize, Circle, ArrowUp, ArrowDown, ChevronRight, Eye, EyeOff, Lock, Unlock,
+  Plus, Minus, RefreshCw, Move, HelpCircle, Bold, Italic, Underline, Baseline, Type as TextIcon,
+  MousePointer, Grid, FlipHorizontal, FlipVertical
+} from 'lucide-react';
 
 if (fabric.FabricObject) {
   (fabric.FabricObject as any).customProperties = [
@@ -10,26 +18,21 @@ if (fabric.FabricObject) {
     'photoRy',
     'photoStroke',
     'photoStrokeWidth',
-    'photoFill'
+    'photoFill',
+    'isAppBackground'
   ];
 }
-import { 
-  Square, Type, Image as ImageIcon, AlignLeft, AlignCenter, AlignRight, AlignJustify,
-  Trash2, RotateCw, Copy, Layers, Save, Undo, Redo, Columns, CheckSquare, Upload,
-  Settings, Maximize
-} from 'lucide-react';
 
-// Preset card sizes in mm
 const CARD_PRESETS: Record<string, { w: number; h: number; label: string }> = {
-  'cr80': { w: 85.6, h: 53.98, label: 'CR-80 Standard (85.6 × 54 mm)' },
-  'cr79': { w: 83.9, h: 51.0, label: 'CR-79 (83.9 × 51 mm)' },
-  'a7': { w: 74, h: 105, label: 'A7 (74 × 105 mm)' },
-  'a6': { w: 105, h: 148, label: 'A6 (105 × 148 mm)' },
+  'cr80': { w: 85.6, h: 53.98, label: 'CR-80 Standard (85.6 Ã— 54 mm)' },
+  'cr79': { w: 83.9, h: 51.0, label: 'CR-79 (83.9 Ã— 51 mm)' },
+  'a7': { w: 74, h: 105, label: 'A7 (74 Ã— 105 mm)' },
+  'a6': { w: 105, h: 148, label: 'A6 (105 Ã— 148 mm)' },
   'custom': { w: 85.6, h: 53.98, label: 'Custom Size' },
 };
 
 const DPI = 300;
-const MM_TO_PX = DPI / 25.4; // 1 mm = 11.811 px at 300 DPI
+const MM_TO_PX = DPI / 25.4;
 
 export default function CanvasEditor() {
   const { activeProject, activeTemplate, saveTemplate, cardFields } = useStore();
@@ -37,24 +40,21 @@ export default function CanvasEditor() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const fabricCanvasRef = useRef<fabric.Canvas | null>(null);
   
-  const [activeSideIndex, setActiveSideIndex] = useState<number>(0);
+  const [selectedTool, setSelectedTool] = useState<'select' | 'text'>('select');
   const [selectedObj, setSelectedObj] = useState<fabric.FabricObject | null>(null);
+  const [canvasObjects, setCanvasObjects] = useState<fabric.FabricObject[]>([]);
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [showSetup, setShowSetup] = useState(true);
 
-  // Card size settings
+  // Card dimensions
   const [cardPreset, setCardPreset] = useState('cr80');
   const [cardWidthMM, setCardWidthMM] = useState(85.6);
   const [cardHeightMM, setCardHeightMM] = useState(53.98);
 
-  // Sides mode settings
-  const [sidesMode, setSidesMode] = useState<'1' | '2' | 'custom'>('2');
-  const [sidesCount, setSidesCount] = useState<number>(2);
-
   // Element styles states
   const [fontFamily, setFontFamily] = useState('Outfit');
-  const [fontSize, setFontSize] = useState(16);
+  const [fontSize, setFontSize] = useState(24);
   const [textColor, setTextColor] = useState('#ffffff');
   const [fontWeight, setFontWeight] = useState('normal');
   const [fontStyle, setFontStyle] = useState('normal');
@@ -66,41 +66,33 @@ export default function CanvasEditor() {
   const [textContent, setTextContent] = useState('');
   const [systemFonts, setSystemFonts] = useState<string[]>([]);
   const [zoom, setZoom] = useState(1);
-  const [textPlacementMode, setTextPlacementMode] = useState<string | null>(null);
+  const [rotation, setRotation] = useState(0);
+  const [opacity, setOpacity] = useState(100);
 
-  // Image placeholder custom states
+  // Geometry properties
+  const [selectedLeft, setSelectedLeft] = useState(0);
+  const [selectedTop, setSelectedTop] = useState(0);
+  const [selectedWidth, setSelectedWidth] = useState(0);
+  const [selectedHeight, setSelectedHeight] = useState(0);
+
+  // Photo settings
   const [photoShape, setPhotoShape] = useState<'rect' | 'circle'>('rect');
   const [photoRx, setPhotoRx] = useState(8);
   const [photoRy, setPhotoRy] = useState(8);
   const [photoStroke, setPhotoStroke] = useState('#0284c7');
   const [photoStrokeWidth, setPhotoStrokeWidth] = useState(2);
   const [photoFill, setPhotoFill] = useState('#2a2a35');
-  const [photoWidth, setPhotoWidth] = useState(250);
-  const [photoHeight, setPhotoHeight] = useState(320);
-  const [photoX, setPhotoX] = useState(380);
-  const [photoY, setPhotoY] = useState(150);
 
-  // Compute pixel dimensions
+  // Sidebar Tab selector
+  const [activeLeftTab, setActiveLeftTab] = useState<'variables' | 'layers'>('variables');
+
+  const clipboardRef = useRef<fabric.FabricObject | null>(null);
+
   const cardW = Math.round(cardWidthMM * MM_TO_PX);
   const cardH = Math.round(cardHeightMM * MM_TO_PX);
+  const displayScale = Math.min(480 / cardW, 340 / cardH, 0.65);
 
-  // Screen display scale factor - fit into ~550px max width
-  const displayScale = Math.min(550 / cardW, 400 / cardH, 0.6);
-
-  // Helper to extract designs array
-  const getDesignsArray = (template: Template | null): string[] => {
-    if (!template) return ['{}', '{}'];
-    try {
-      if (template.frontDesign && template.frontDesign.startsWith('[')) {
-        return JSON.parse(template.frontDesign);
-      }
-      return [template.frontDesign || '{}', template.backDesign || '{}'];
-    } catch (e) {
-      return ['{}', '{}'];
-    }
-  };
-
-  // Load system fonts on component mount
+  // Load system fonts
   useEffect(() => {
     const fetchFonts = async () => {
       try {
@@ -115,188 +107,48 @@ export default function CanvasEditor() {
     fetchFonts();
   }, []);
 
-  // Update canvas zoom and dimensions dynamically
+  // Update canvas sizing
   useEffect(() => {
     const canvas = fabricCanvasRef.current;
     if (!canvas) return;
-    canvas.setZoom(zoom);
-    canvas.setDimensions({
-      width: cardW * displayScale * zoom,
-      height: cardH * displayScale * zoom
-    });
-    canvas.renderAll();
-  }, [zoom, cardW, cardH, displayScale]);
-
-  // Handle point vs paragraph text placement mouse events
-  useEffect(() => {
-    const canvas = fabricCanvasRef.current;
-    if (!canvas) return;
-
-    if (textPlacementMode) {
-      canvas.defaultCursor = 'text';
-      canvas.hoverCursor = 'text';
-      canvas.selection = false;
-    } else {
-      canvas.defaultCursor = 'default';
-      canvas.hoverCursor = 'move';
-      canvas.selection = true;
-      return;
+    
+    if (canvas.width !== cardW || canvas.height !== cardH) {
+      canvas.setDimensions({ width: cardW, height: cardH }, { backstoreOnly: true });
+      canvas.setDimensions({ width: `${cardW}px`, height: `${cardH}px` }, { cssOnly: true });
+      
+      const bgImg = canvas.getObjects().find(o => (o as any).isAppBackground);
+      if (bgImg) {
+        const element = (bgImg as any)._element as HTMLImageElement | null;
+        const imgWidth = element ? (element.naturalWidth || element.width) : (bgImg.width || cardW);
+        const imgHeight = element ? (element.naturalHeight || element.height) : (bgImg.height || cardH);
+        bgImg.set({
+          scaleX: cardW / imgWidth,
+          scaleY: cardH / imgHeight
+        });
+      }
+      canvas.renderAll();
     }
+  }, [cardW, cardH]);
 
-    let isMouseDown = false;
-    let startX = 0;
-    let startY = 0;
-    let rectPreview: fabric.Rect | null = null;
-
-    const onMouseDown = (opt: any) => {
-      canvas.discardActiveObject();
-      const pointer = canvas.getScenePoint(opt.e);
-      isMouseDown = true;
-      startX = pointer.x;
-      startY = pointer.y;
-
-      rectPreview = new fabric.Rect({
-        left: startX,
-        top: startY,
-        width: 0,
-        height: 0,
-        fill: 'transparent',
-        stroke: '#0284c7',
-        strokeWidth: 1,
-        strokeDashArray: [5, 5],
-        selectable: false,
-        evented: false
-      });
-      canvas.add(rectPreview);
-      canvas.renderAll();
-    };
-
-    const onMouseMove = (opt: any) => {
-      if (!isMouseDown || !rectPreview) return;
-      const pointer = canvas.getScenePoint(opt.e);
-      
-      const width = pointer.x - startX;
-      const height = pointer.y - startY;
-
-      rectPreview.set({
-        width: Math.abs(width),
-        height: Math.abs(height),
-        left: width > 0 ? startX : pointer.x,
-        top: height > 0 ? startY : pointer.y
-      });
-      canvas.renderAll();
-    };
-
-    const onMouseUp = (opt: any) => {
-      if (!isMouseDown) return;
-      isMouseDown = false;
-      const pointer = canvas.getScenePoint(opt.e);
-
-      if (rectPreview) {
-        canvas.remove(rectPreview);
-        rectPreview = null;
-      }
-
-      const endX = pointer.x;
-      const endY = pointer.y;
-      const width = Math.abs(endX - startX);
-      
-      const x = Math.min(startX, endX);
-      const y = Math.min(startY, endY);
-
-      let textObject;
-
-      // If drag width is small (< 15px), place Point Text (fabric.IText)
-      if (width < 15) {
-        textObject = new fabric.IText(textPlacementMode, {
-          left: x,
-          top: y,
-          fontSize: 28 * displayScale,
-          fontFamily: 'Outfit',
-          fill: '#ffffff',
-          fontWeight: 'normal',
-          textAlign: 'center',
-          borderColor: '#0284c7',
-          cornerColor: '#0284c7',
-          cornerSize: 8,
-          transparentCorners: false
-        });
-      } else {
-        // If dragged, place Paragraph Text (fabric.Textbox)
-        textObject = new fabric.Textbox(textPlacementMode, {
-          left: x,
-          top: y,
-          width: width,
-          fontSize: 28 * displayScale,
-          fontFamily: 'Outfit',
-          fill: '#ffffff',
-          fontWeight: 'normal',
-          textAlign: 'center',
-          borderColor: '#0284c7',
-          cornerColor: '#0284c7',
-          cornerSize: 8,
-          transparentCorners: false
-        });
-      }
-
-      canvas.add(textObject);
-      canvas.setActiveObject(textObject);
-      
-      // Exit text placement mode
-      setTextPlacementMode(null);
-      canvas.defaultCursor = 'default';
-      canvas.hoverCursor = 'move';
-      canvas.selection = true;
-
-      canvas.renderAll();
-      saveToHistory();
-      triggerAutoSave();
-    };
-
-    canvas.on('mouse:down', onMouseDown);
-    canvas.on('mouse:move', onMouseMove);
-    canvas.on('mouse:up', onMouseUp);
-
-    return () => {
-      canvas.off('mouse:down', onMouseDown);
-      canvas.off('mouse:move', onMouseMove);
-      canvas.off('mouse:up', onMouseUp);
-    };
-  }, [textPlacementMode, displayScale]);
-
-  // Load saved template dimensions and sides config
+  // Load initial template properties
   useEffect(() => {
     if (activeTemplate) {
       if (activeTemplate.width && activeTemplate.height) {
         setCardWidthMM(activeTemplate.width);
         setCardHeightMM(activeTemplate.height);
         
-        // Match preset
         const matchedPreset = Object.entries(CARD_PRESETS).find(
           ([k, v]) => k !== 'custom' && Math.abs(v.w - activeTemplate.width) < 0.5 && Math.abs(v.h - activeTemplate.height) < 0.5
         );
         setCardPreset(matchedPreset ? matchedPreset[0] : 'custom');
 
-        // Match sides count
-        let count = 2;
-        let mode: '1' | '2' | 'custom' = '2';
         let isConfigured = false;
         if (activeTemplate.layout) {
           try {
             const layoutData = JSON.parse(activeTemplate.layout);
-            if (layoutData.isConfigured) {
-              isConfigured = true;
-            }
-            if (layoutData.sidesCount) {
-              count = Number(layoutData.sidesCount);
-              if (count === 1) mode = '1';
-              else if (count === 2) mode = '2';
-              else mode = 'custom';
-            }
+            if (layoutData.isConfigured) isConfigured = true;
           } catch (e) {}
         }
-        setSidesMode(mode);
-        setSidesCount(count);
         setShowSetup(!isConfigured);
       }
     }
@@ -311,15 +163,9 @@ export default function CanvasEditor() {
     }
   };
 
-  const handleSidesModeChange = (mode: '1' | '2' | 'custom') => {
-    setSidesMode(mode);
-    if (mode === '1') setSidesCount(1);
-    else if (mode === '2') setSidesCount(2);
-  };
-
-  const handleApplySize = async () => {
+  const handleApplySetup = async () => {
     const activeLayout = activeTemplate?.layout ? JSON.parse(activeTemplate.layout) : {};
-    activeLayout.sidesCount = sidesCount;
+    activeLayout.sidesCount = 1; 
     activeLayout.isConfigured = true;
 
     await saveTemplate({ 
@@ -331,6 +177,95 @@ export default function CanvasEditor() {
     setShowSetup(false);
   };
 
+  // Keyboard Nudge, Undo, Redo, Copy, Paste, Delete
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (
+        document.activeElement?.tagName === 'INPUT' || 
+        document.activeElement?.tagName === 'TEXTAREA' || 
+        document.activeElement?.getAttribute('contenteditable') === 'true'
+      ) {
+        return;
+      }
+
+      const canvas = fabricCanvasRef.current;
+      if (!canvas) return;
+
+      const activeObj = canvas.getActiveObject();
+      if (!activeObj) return;
+
+      const nudge = e.shiftKey ? 10 : 1;
+
+      if (e.key === 'ArrowUp') {
+        activeObj.set('top', activeObj.top - nudge);
+        activeObj.setCoords(); canvas.renderAll(); e.preventDefault(); triggerAutoSave();
+      } else if (e.key === 'ArrowDown') {
+        activeObj.set('top', activeObj.top + nudge);
+        activeObj.setCoords(); canvas.renderAll(); e.preventDefault(); triggerAutoSave();
+      } else if (e.key === 'ArrowLeft') {
+        activeObj.set('left', activeObj.left - nudge);
+        activeObj.setCoords(); canvas.renderAll(); e.preventDefault(); triggerAutoSave();
+      } else if (e.key === 'ArrowRight') {
+        activeObj.set('left', activeObj.left + nudge);
+        activeObj.setCoords(); canvas.renderAll(); e.preventDefault(); triggerAutoSave();
+      }
+
+      if ((e.key === 'Delete' || e.key === 'Backspace') && !(activeObj as any).isEditing) {
+        deleteSelected();
+        e.preventDefault();
+      }
+
+      if (e.ctrlKey || e.metaKey) {
+        if (e.key.toLowerCase() === 'c') {
+          copyToClipboard(); e.preventDefault();
+        } else if (e.key.toLowerCase() === 'v') {
+          pasteFromClipboard(); e.preventDefault();
+        } else if (e.key.toLowerCase() === 'z') {
+          handleUndo(); e.preventDefault();
+        } else if (e.key.toLowerCase() === 'y') {
+          handleRedo(); e.preventDefault();
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedObj, historyIndex, history]);
+
+  const copyToClipboard = () => {
+    const canvas = fabricCanvasRef.current;
+    if (!canvas) return;
+    const activeObj = canvas.getActiveObject();
+    if (!activeObj) return;
+    activeObj.clone().then((cloned) => {
+      clipboardRef.current = cloned;
+    });
+  };
+
+  const pasteFromClipboard = () => {
+    const canvas = fabricCanvasRef.current;
+    if (!canvas || !clipboardRef.current) return;
+    clipboardRef.current.clone().then((clonedObj) => {
+      canvas.discardActiveObject();
+      clonedObj.set({
+        left: clonedObj.left + 25,
+        top: clonedObj.top + 25,
+        evented: true,
+      });
+      canvas.add(clonedObj);
+      if (clipboardRef.current) {
+        clipboardRef.current.top += 25;
+        clipboardRef.current.left += 25;
+      }
+      canvas.setActiveObject(clonedObj);
+      canvas.requestRenderAll();
+      syncObjectsList();
+      saveToHistory();
+      triggerAutoSave();
+    });
+  };
+
+  // Initialize Canvas
   useEffect(() => {
     if (showSetup || !canvasRef.current) return;
 
@@ -340,13 +275,14 @@ export default function CanvasEditor() {
     }
 
     const canvas = new fabric.Canvas(canvasRef.current, {
-      width: cardW * displayScale,
-      height: cardH * displayScale,
-      backgroundColor: '#1e1e24',
+      width: cardW,
+      height: cardH,
+      backgroundColor: '#18181b',
       selection: true,
     });
 
     fabricCanvasRef.current = canvas;
+    (canvas as any).isHiRes = true;
 
     canvas.on('selection:created', (e) => {
       const activeObj = canvas.getActiveObject();
@@ -363,61 +299,86 @@ export default function CanvasEditor() {
       }
     });
     canvas.on('selection:cleared', () => setSelectedObj(null));
+
     canvas.on('object:modified', () => {
+      syncObjectsList();
       saveToHistory();
       triggerAutoSave();
     });
-    canvas.on('object:moving', (e) => {
-      if (e.target) updateStyleControls(e.target);
-    });
-    canvas.on('object:scaling', (e) => {
-      if (e.target) updateStyleControls(e.target);
+    canvas.on('object:moving', (e) => { if (e.target) updateStyleControls(e.target); });
+    canvas.on('object:scaling', (e) => { if (e.target) updateStyleControls(e.target); });
+    canvas.on('object:rotating', (e) => { if (e.target) updateStyleControls(e.target); });
+
+    canvas.on('text:selection:changed', (e) => {
+      const activeObj = canvas.getActiveObject();
+      if (activeObj && (activeObj as any).isEditing) {
+        const txt = activeObj as fabric.Textbox;
+        setCachedSelection({
+          start: txt.selectionStart || 0,
+          end: txt.selectionEnd || 0,
+          id: (txt as any)._cachedId || ((txt as any)._cachedId = Math.random().toString(36).substr(2, 9))
+        });
+        updateStyleControls(activeObj);
+      }
     });
 
-    loadSideData(activeSideIndex);
+    loadDesignData();
 
     return () => {
       canvas.dispose();
       fabricCanvasRef.current = null;
     };
-  }, [activeTemplate?.id, activeSideIndex, showSetup, cardW, cardH]);
+  }, [activeTemplate?.id, showSetup, cardW, cardH]);
 
-  const loadSideData = (sideIdx: number) => {
+  const syncObjectsList = () => {
+    const canvas = fabricCanvasRef.current;
+    if (!canvas) return;
+    const objs = canvas.getObjects().filter(o => !(o as any).isAppBackground);
+    setCanvasObjects([...objs].reverse());
+  };
+
+  const loadDesignData = async () => {
     const canvas = fabricCanvasRef.current;
     if (!canvas || !activeTemplate) return;
-    canvas.clear();
-    canvas.backgroundColor = '#1e1e24';
-    
-    const designs = getDesignsArray(activeTemplate);
-    const designJson = designs[sideIdx];
-    
-    if (designJson && designJson !== '{}') {
+
+    let designJson = activeTemplate.frontDesign || '{}';
+    if (designJson.startsWith('[')) {
       try {
-        const parsed = JSON.parse(designJson);
-        canvas.loadFromJSON(parsed).then(() => {
-          canvas.renderAll();
-          saveToHistory(true);
-        });
-      } catch (err) {
-        console.error('Failed to load fabric JSON:', err);
-      }
-    } else {
-      canvas.renderAll();
-      saveToHistory(true);
+        const list = JSON.parse(designJson);
+        designJson = list[0] || '{}';
+      } catch (e) {}
     }
+
+    await loadTemplateToCanvas(canvas, designJson, cardW, cardH, {
+      isPreview: false,
+      displayScale: displayScale
+    });
+    syncObjectsList();
+    saveToHistory(true);
   };
 
   const updateStyleControls = (obj: fabric.FabricObject) => {
+    setRotation(Math.round(obj.angle || 0));
+    setSelectedLeft(Math.round(obj.left || 0));
+    setSelectedTop(Math.round(obj.top || 0));
+    setSelectedWidth(Math.round(obj.width * (obj.scaleX || 1)));
+    setSelectedHeight(Math.round(obj.height * (obj.scaleY || 1)));
+    setOpacity(Math.round((obj.opacity ?? 1) * 100));
+
     if (obj instanceof fabric.Textbox || obj.type === 'textbox' || obj.type === 'i-text') {
       const textObj = obj as fabric.Textbox;
-      setFontFamily(textObj.fontFamily || 'Outfit');
-      setFontSize(Math.round((textObj.fontSize || 16) / displayScale));
-      setTextColor(textObj.fill as string || '#ffffff');
-      setFontWeight(String(textObj.fontWeight || 'normal'));
-      setFontStyle(textObj.fontStyle || 'normal');
-      setUnderline(!!textObj.underline);
-      setLinethrough(!!textObj.linethrough);
-      setTextBackgroundColor(textObj.textBackgroundColor || 'transparent');
+      let activeStyle: any = {};
+      if (textObj.isEditing) {
+        activeStyle = textObj.getSelectionStyles(textObj.selectionStart, textObj.selectionStart + 1)[0] || {};
+      }
+      setFontFamily(activeStyle.fontFamily || textObj.fontFamily || 'Outfit');
+      setFontSize(Math.round(activeStyle.fontSize || textObj.fontSize || 24));
+      setTextColor(activeStyle.fill || textObj.fill as string || '#ffffff');
+      setFontWeight(String(activeStyle.fontWeight || textObj.fontWeight || 'normal'));
+      setFontStyle(activeStyle.fontStyle || textObj.fontStyle || 'normal');
+      setUnderline(activeStyle.underline !== undefined ? !!activeStyle.underline : !!textObj.underline);
+      setLinethrough(activeStyle.linethrough !== undefined ? !!activeStyle.linethrough : !!textObj.linethrough);
+      setTextBackgroundColor(activeStyle.textBackgroundColor || textObj.textBackgroundColor || 'transparent');
       setLineHeight(textObj.lineHeight || 1.16);
       setCharSpacing(textObj.charSpacing || 0);
       setTextContent(textObj.text || '');
@@ -428,17 +389,15 @@ export default function CanvasEditor() {
       setPhotoStroke((obj as any).photoStroke || '#0284c7');
       setPhotoStrokeWidth((obj as any).photoStrokeWidth !== undefined ? (obj as any).photoStrokeWidth : 2);
       setPhotoFill((obj as any).photoFill || '#2a2a35');
-      setPhotoWidth(Math.round((obj.width * obj.scaleX!) / displayScale));
-      setPhotoHeight(Math.round((obj.height * obj.scaleY!) / displayScale));
-      setPhotoX(Math.round(obj.left / displayScale));
-      setPhotoY(Math.round(obj.top / displayScale));
     }
   };
 
   const saveToHistory = (clear = false) => {
     const canvas = fabricCanvasRef.current;
     if (!canvas) return;
-    const json = JSON.stringify((canvas as any).toJSON(['name', 'photoShape', 'photoRx', 'photoRy', 'photoStroke', 'photoStrokeWidth', 'photoFill']));
+    const serialized = (canvas as any).toJSON(['name', 'photoShape', 'photoRx', 'photoRy', 'photoStroke', 'photoStrokeWidth', 'photoFill', 'isAppBackground']);
+    serialized.isHiRes = true;
+    const json = JSON.stringify(serialized);
     if (clear) {
       setHistory([json]);
       setHistoryIndex(0);
@@ -453,28 +412,35 @@ export default function CanvasEditor() {
   const handleUndo = () => {
     const canvas = fabricCanvasRef.current;
     if (!canvas || historyIndex <= 0) return;
-    const prevIndex = historyIndex - 1;
-    setHistoryIndex(prevIndex);
-    canvas.loadFromJSON(JSON.parse(history[prevIndex])).then(() => canvas.renderAll());
+    const prev = historyIndex - 1;
+    setHistoryIndex(prev);
+    canvas.loadFromJSON(JSON.parse(history[prev])).then(() => {
+      canvas.renderAll();
+      syncObjectsList();
+      triggerAutoSave();
+    });
   };
 
   const handleRedo = () => {
     const canvas = fabricCanvasRef.current;
     if (!canvas || historyIndex >= history.length - 1) return;
-    const nextIndex = historyIndex + 1;
-    setHistoryIndex(nextIndex);
-    canvas.loadFromJSON(JSON.parse(history[nextIndex])).then(() => canvas.renderAll());
+    const next = historyIndex + 1;
+    setHistoryIndex(next);
+    canvas.loadFromJSON(JSON.parse(history[next])).then(() => {
+      canvas.renderAll();
+      syncObjectsList();
+      triggerAutoSave();
+    });
   };
 
-  // Add Elements
-  const addTextPlaceholder = (placeholderText: string = '{Name}') => {
+  const addTextVariable = (field: string) => {
     const canvas = fabricCanvasRef.current;
     if (!canvas) return;
-    const text = new fabric.Textbox(placeholderText, {
-      left: 100 * displayScale,
-      top: 150 * displayScale,
-      width: 400 * displayScale,
-      fontSize: 28 * displayScale,
+    const textObj = new fabric.Textbox(`{${field}}`, {
+      left: Math.round(cardW * 0.15),
+      top: Math.round(cardH * 0.4),
+      width: Math.round(cardW * 0.7),
+      fontSize: 28,
       fontFamily: 'Outfit',
       fill: '#ffffff',
       fontWeight: 'normal',
@@ -484,9 +450,10 @@ export default function CanvasEditor() {
       cornerSize: 8,
       transparentCorners: false
     });
-    canvas.add(text);
-    canvas.setActiveObject(text);
+    canvas.add(textObj);
+    canvas.setActiveObject(textObj);
     canvas.renderAll();
+    syncObjectsList();
     saveToHistory();
     triggerAutoSave();
   };
@@ -494,86 +461,150 @@ export default function CanvasEditor() {
   const addPhotoPlaceholder = () => {
     const canvas = fabricCanvasRef.current;
     if (!canvas) return;
+
+    const w = Math.round(cardW * 0.35);
+    const h = Math.round(cardH * 0.4);
+    const x = Math.round((cardW - w) / 2);
+    const y = Math.round(cardH * 0.15);
+
     const rect = new fabric.Rect({
-      left: 380 * displayScale,
-      top: 150 * displayScale,
-      width: 250 * displayScale,
-      height: 320 * displayScale,
+      left: 0, top: 0,
+      width: w, height: h,
       fill: '#2a2a35',
       stroke: '#0284c7',
       strokeWidth: 2,
       rx: 8, ry: 8,
-      name: '{Photo}',
+      name: 'bg',
       borderColor: '#0284c7', cornerColor: '#0284c7'
     } as any);
+
     const label = new fabric.Textbox('{Photo}', {
-      left: 385 * displayScale,
-      top: 290 * displayScale,
-      width: 240 * displayScale,
-      fontSize: 20 * displayScale,
+      left: 5,
+      top: h / 2 - 10,
+      width: w - 10,
+      fontSize: 20,
       fontFamily: 'Outfit',
       fill: '#8c8c9e',
       textAlign: 'center',
       selectable: false
     });
+
     const group = new fabric.Group([rect, label], {
-      left: 380 * displayScale, top: 150 * displayScale,
+      left: x, top: y,
       name: '{Photo}', borderColor: '#0284c7', cornerColor: '#0284c7', transparentCorners: false
     } as any);
+
+    (group as any).photoShape = 'rect';
+    (group as any).photoRx = 8;
+    (group as any).photoRy = 8;
+    (group as any).photoStroke = '#0284c7';
+    (group as any).photoStrokeWidth = 2;
+    (group as any).photoFill = '#2a2a35';
+
     canvas.add(group);
     canvas.setActiveObject(group);
     canvas.renderAll();
+    syncObjectsList();
     saveToHistory();
     triggerAutoSave();
   };
+const handleBackgroundUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const file = e.target.files?.[0];
+  const canvas = fabricCanvasRef.current;
 
+  if (!file || !canvas) return;
 
-  // Upload Custom Background Image
-  const handleBackgroundUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    const canvas = fabricCanvasRef.current;
-    if (!file || !canvas) return;
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const imgUrl = event.target?.result as string;
-      fabric.Image.fromURL(imgUrl).then((img) => {
-        img.set({
-          left: 0, top: 0,
-          scaleX: (cardW * displayScale) / img.width!,
-          scaleY: (cardH * displayScale) / img.height!,
-          selectable: false, evented: false
-        });
-        canvas.backgroundImage = img;
-        canvas.renderAll();
-        saveToHistory();
-        triggerAutoSave();
+  const reader = new FileReader();
+
+  reader.onload = async (event) => {
+    const imgUrl = event.target?.result as string;
+
+    try {
+      const img = await fabric.Image.fromURL(imgUrl);
+
+      const element = (img as any)._element as HTMLImageElement | null;
+      const imgWidth = element ? (element.naturalWidth || element.width) : (img.width || cardW);
+      const imgHeight = element ? (element.naturalHeight || element.height) : (img.height || cardH);
+
+      // Remove previous background
+      canvas.getObjects().forEach((obj) => {
+        if ((obj as any).isAppBackground) {
+          canvas.remove(obj);
+        }
       });
-    };
-    reader.readAsDataURL(file);
+
+      img.set({
+        originX: "left",
+        originY: "top",
+
+        left: 0,
+        top: 0,
+
+        selectable: false,
+        evented: false,
+        hasControls: false,
+        hasBorders: false,
+        objectCaching: false
+      });
+
+      img.scaleX = cardW / imgWidth;
+      img.scaleY = cardH / imgHeight;
+
+      (img as any).isAppBackground = true;
+
+      canvas.insertAt(0, img);
+
+      img.setCoords();
+      canvas.requestRenderAll();
+
+      syncObjectsList();
+      saveToHistory();
+      triggerAutoSave();
+    } catch (err) {
+      console.error("Background upload failed:", err);
+    }
   };
 
-  // Properties Modifiers
+  reader.readAsDataURL(file);
+};
+
+  const [cachedSelection, setCachedSelection] = useState<{start: number, end: number, id: string | null}>({start: 0, end: 0, id: null});
+
+  const applyStyleToText = (obj: fabric.Textbox, styleObj: any) => {
+    const objId = (obj as any)._cachedId || ((obj as any)._cachedId = Math.random().toString(36).substr(2, 9));
+    const isEditing = obj.isEditing && obj.selectionStart !== obj.selectionEnd;
+    const hasCached = cachedSelection.id === objId && cachedSelection.start !== cachedSelection.end;
+
+    if (isEditing || hasCached) {
+      const start = isEditing ? obj.selectionStart : cachedSelection.start;
+      const end = isEditing ? obj.selectionEnd : cachedSelection.end;
+      const origStart = obj.selectionStart;
+      const origEnd = obj.selectionEnd;
+      obj.selectionStart = start;
+      obj.selectionEnd = end;
+      obj.setSelectionStyles(styleObj);
+      obj.selectionStart = origStart;
+      obj.selectionEnd = origEnd;
+    } else {
+      obj.set(styleObj);
+    }
+  };
+
   const modifyFontFamily = (family: string) => {
     const canvas = fabricCanvasRef.current;
     const obj = selectedObj;
     if (!canvas || !obj) return;
     if (obj instanceof fabric.Textbox || obj.type === 'textbox' || obj.type === 'i-text') {
-      (obj as fabric.Textbox).set('fontFamily', family);
+      applyStyleToText(obj as fabric.Textbox, { fontFamily: family });
       setFontFamily(family);
       canvas.renderAll();
       if (document.fonts) {
         document.fonts.load(`12px "${family}"`).then(() => {
-          canvas.renderAll();
-          triggerAutoSave();
-        }).catch((err) => {
-          console.warn('Failed to load system font face:', err);
-          triggerAutoSave();
+          canvas.renderAll(); triggerAutoSave();
         });
-      } else {
-        triggerAutoSave();
       }
-      saveToHistory();
     }
+    saveToHistory();
   };
 
   const modifyFontSize = (size: number) => {
@@ -581,10 +612,9 @@ export default function CanvasEditor() {
     const obj = selectedObj;
     if (!canvas || !obj) return;
     if (obj instanceof fabric.Textbox || obj.type === 'textbox' || obj.type === 'i-text') {
-      (obj as fabric.Textbox).set('fontSize', size * displayScale);
+      applyStyleToText(obj as fabric.Textbox, { fontSize: size });
       setFontSize(size);
-      canvas.renderAll(); saveToHistory();
-      triggerAutoSave();
+      canvas.renderAll(); saveToHistory(); triggerAutoSave();
     }
   };
 
@@ -593,10 +623,17 @@ export default function CanvasEditor() {
     const obj = selectedObj;
     if (!canvas || !obj) return;
     if (obj instanceof fabric.Textbox || obj.type === 'textbox' || obj.type === 'i-text') {
-      (obj as fabric.Textbox).set('fill', color);
+      const txt = obj as fabric.Textbox;
+      if (txt.isEditing && txt.selectionStart !== txt.selectionEnd) {
+        txt.setSelectionStyles({ fill: color });
+      } else {
+        txt.set('fill', color);
+      }
       setTextColor(color);
-      canvas.renderAll(); saveToHistory();
-      triggerAutoSave();
+      canvas.renderAll(); saveToHistory(); triggerAutoSave();
+    } else {
+      obj.set('fill', color);
+      canvas.renderAll(); saveToHistory(); triggerAutoSave();
     }
   };
 
@@ -605,11 +642,49 @@ export default function CanvasEditor() {
     const obj = selectedObj;
     if (!canvas || !obj) return;
     if (obj instanceof fabric.Textbox || obj.type === 'textbox' || obj.type === 'i-text') {
-      const nextWeight = fontWeight === 'normal' ? 'bold' : 'normal';
-      (obj as fabric.Textbox).set('fontWeight', nextWeight);
-      setFontWeight(nextWeight);
-      canvas.renderAll(); saveToHistory();
-      triggerAutoSave();
+      const txt = obj as fabric.Textbox;
+      const next = fontWeight === 'normal' ? 'bold' : 'normal';
+      if (txt.isEditing && txt.selectionStart !== txt.selectionEnd) {
+        txt.setSelectionStyles({ fontWeight: next });
+      } else {
+        txt.set('fontWeight', next);
+      }
+      setFontWeight(next);
+      canvas.renderAll(); saveToHistory(); triggerAutoSave();
+    }
+  };
+
+  const modifyFontStyle = () => {
+    const canvas = fabricCanvasRef.current;
+    const obj = selectedObj;
+    if (!canvas || !obj) return;
+    if (obj instanceof fabric.Textbox || obj.type === 'textbox' || obj.type === 'i-text') {
+      const txt = obj as fabric.Textbox;
+      const next = fontStyle === 'normal' ? 'italic' : 'normal';
+      if (txt.isEditing && txt.selectionStart !== txt.selectionEnd) {
+        txt.setSelectionStyles({ fontStyle: next });
+      } else {
+        txt.set('fontStyle', next);
+      }
+      setFontStyle(next);
+      canvas.renderAll(); saveToHistory(); triggerAutoSave();
+    }
+  };
+
+  const modifyUnderline = () => {
+    const canvas = fabricCanvasRef.current;
+    const obj = selectedObj;
+    if (!canvas || !obj) return;
+    if (obj instanceof fabric.Textbox || obj.type === 'textbox' || obj.type === 'i-text') {
+      const txt = obj as fabric.Textbox;
+      const next = !underline;
+      if (txt.isEditing && txt.selectionStart !== txt.selectionEnd) {
+        txt.setSelectionStyles({ underline: next });
+      } else {
+        txt.set('underline', next);
+      }
+      setUnderline(next);
+      canvas.renderAll(); saveToHistory(); triggerAutoSave();
     }
   };
 
@@ -619,40 +694,8 @@ export default function CanvasEditor() {
     if (!canvas || !obj) return;
     if (obj instanceof fabric.Textbox || obj.type === 'textbox' || obj.type === 'i-text') {
       (obj as fabric.Textbox).set('textAlign', align);
-      canvas.renderAll(); saveToHistory();
-      triggerAutoSave();
+      canvas.renderAll(); saveToHistory(); triggerAutoSave();
     }
-  };
-
-  const modifyTextCase = (mode: 'uppercase' | 'lowercase' | 'titlecase' | 'normal') => {
-    const canvas = fabricCanvasRef.current;
-    const obj = selectedObj;
-    if (!canvas || !obj) return;
-    if (obj instanceof fabric.Textbox || obj.type === 'textbox' || obj.type === 'i-text') {
-      let currentText = (obj as fabric.Textbox).text || '';
-      if (mode === 'uppercase') {
-        currentText = currentText.toUpperCase();
-      } else if (mode === 'lowercase') {
-        currentText = currentText.toLowerCase();
-      } else if (mode === 'titlecase') {
-        currentText = currentText.replace(/\w\S*/g, (txt) => txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase());
-      }
-      (obj as fabric.Textbox).set('text', currentText);
-      setTextContent(currentText);
-      canvas.renderAll(); saveToHistory();
-      triggerAutoSave();
-    }
-  };
-
-  const deleteSelected = () => {
-    const canvas = fabricCanvasRef.current;
-    const obj = selectedObj;
-    if (!canvas || !obj) return;
-    canvas.remove(obj);
-    canvas.discardActiveObject();
-    setSelectedObj(null);
-    canvas.renderAll(); saveToHistory();
-    triggerAutoSave();
   };
 
   const modifyTextContent = (text: string) => {
@@ -662,184 +705,156 @@ export default function CanvasEditor() {
     if (obj instanceof fabric.Textbox || obj.type === 'textbox' || obj.type === 'i-text') {
       (obj as fabric.Textbox).set('text', text);
       setTextContent(text);
-      canvas.renderAll();
-      triggerAutoSave();
+      canvas.renderAll(); triggerAutoSave();
     }
   };
 
-  const modifyFontStyle = () => {
+  const modifyPosition = (axis: 'left' | 'top' | 'width' | 'height', val: number) => {
     const canvas = fabricCanvasRef.current;
     const obj = selectedObj;
     if (!canvas || !obj) return;
-    if (obj instanceof fabric.Textbox || obj.type === 'textbox' || obj.type === 'i-text') {
-      const nextStyle = fontStyle === 'normal' ? 'italic' : 'normal';
-      (obj as fabric.Textbox).set('fontStyle', nextStyle);
-      setFontStyle(nextStyle);
-      canvas.renderAll(); saveToHistory();
-      triggerAutoSave();
+    if (axis === 'left') {
+      obj.set('left', val); setSelectedLeft(val);
+    } else if (axis === 'top') {
+      obj.set('top', val); setSelectedTop(val);
+    } else if (axis === 'width') {
+      obj.set('scaleX', val / obj.width); setSelectedWidth(val);
+    } else if (axis === 'height') {
+      obj.set('scaleY', val / obj.height); setSelectedHeight(val);
     }
+    obj.setCoords(); canvas.renderAll(); saveToHistory(); triggerAutoSave();
   };
 
-  const modifyUnderline = () => {
+  const modifyOpacity = (value: number) => {
     const canvas = fabricCanvasRef.current;
     const obj = selectedObj;
     if (!canvas || !obj) return;
-    if (obj instanceof fabric.Textbox || obj.type === 'textbox' || obj.type === 'i-text') {
-      const next = !underline;
-      (obj as fabric.Textbox).set('underline', next);
-      setUnderline(next);
-      canvas.renderAll(); saveToHistory();
-      triggerAutoSave();
-    }
+    const next = Math.max(0, Math.min(100, value));
+    obj.set('opacity', next / 100);
+    setOpacity(next);
+    canvas.renderAll(); saveToHistory(); triggerAutoSave();
   };
 
-  const modifyLinethrough = () => {
+  const toggleFlip = (axis: 'x' | 'y') => {
     const canvas = fabricCanvasRef.current;
     const obj = selectedObj;
     if (!canvas || !obj) return;
-    if (obj instanceof fabric.Textbox || obj.type === 'textbox' || obj.type === 'i-text') {
-      const next = !linethrough;
-      (obj as fabric.Textbox).set('linethrough', next);
-      setLinethrough(next);
-      canvas.renderAll(); saveToHistory();
-      triggerAutoSave();
-    }
+    obj.set(axis === 'x' ? 'flipX' : 'flipY', axis === 'x' ? !obj.flipX : !obj.flipY);
+    obj.setCoords(); canvas.renderAll(); saveToHistory(); triggerAutoSave();
   };
 
-  const modifyTextBackgroundColor = (color: string) => {
+  const updatePhotoFrame = (updates: { shape?: 'rect' | 'circle'; radius?: number; stroke?: string; strokeWidth?: number; fill?: string }) => {
     const canvas = fabricCanvasRef.current;
-    const obj = selectedObj;
-    if (!canvas || !obj) return;
-    if (obj instanceof fabric.Textbox || obj.type === 'textbox' || obj.type === 'i-text') {
-      (obj as fabric.Textbox).set('textBackgroundColor', color);
-      setTextBackgroundColor(color);
-      canvas.renderAll(); saveToHistory();
-      triggerAutoSave();
-    }
-  };
+    const obj = selectedObj as fabric.Group | null;
+    if (!canvas || !obj || (obj as any).name !== '{Photo}') return;
 
-  const modifyLineHeight = (val: number) => {
-    const canvas = fabricCanvasRef.current;
-    const obj = selectedObj;
-    if (!canvas || !obj) return;
-    if (obj instanceof fabric.Textbox || obj.type === 'textbox' || obj.type === 'i-text') {
-      (obj as fabric.Textbox).set('lineHeight', val);
-      setLineHeight(val);
-      canvas.renderAll(); saveToHistory();
-      triggerAutoSave();
-    }
-  };
+    const shape = updates.shape ?? ((obj as any).photoShape || 'rect');
+    const radius = Math.max(0, Number(updates.radius ?? ((obj as any).photoRx ?? 8)) || 0);
+    const stroke = updates.stroke ?? ((obj as any).photoStroke || '#0284c7');
+    const strokeWidth = Math.max(0, Number(updates.strokeWidth ?? ((obj as any).photoStrokeWidth ?? 2)) || 0);
+    const fill = updates.fill ?? ((obj as any).photoFill || '#2a2a35');
 
-  const modifyCharSpacing = (val: number) => {
-    const canvas = fabricCanvasRef.current;
-    const obj = selectedObj;
-    if (!canvas || !obj) return;
-    if (obj instanceof fabric.Textbox || obj.type === 'textbox' || obj.type === 'i-text') {
-      (obj as fabric.Textbox).set('charSpacing', val);
-      setCharSpacing(val);
-      canvas.renderAll(); saveToHistory();
-      triggerAutoSave();
-    }
-  };
+    const visualLeft = obj.left || 0;
+    const visualTop = obj.top || 0;
+    const visualWidth = Math.max(12, obj.getScaledWidth());
+    const visualHeight = Math.max(12, obj.getScaledHeight());
+    const centerX = visualLeft + visualWidth / 2;
+    const centerY = visualTop + visualHeight / 2;
+    const nextWidth = shape === 'circle' ? Math.min(visualWidth, visualHeight) : visualWidth;
+    const nextHeight = shape === 'circle' ? nextWidth : visualHeight;
+    const nextLeft = shape === 'circle' ? centerX - nextWidth / 2 : visualLeft;
+    const nextTop = shape === 'circle' ? centerY - nextHeight / 2 : visualTop;
 
-  const modifyPhotoProperty = (prop: string, val: any) => {
-    const canvas = fabricCanvasRef.current;
-    const obj = selectedObj;
-    if (!canvas || !obj) return;
-
-    const currentShape = prop === 'shape' ? val : (photoShape || 'rect');
-    const currentRx = prop === 'rx' ? Number(val) : photoRx;
-    const currentRy = prop === 'ry' ? Number(val) : photoRy;
-    const currentStroke = prop === 'stroke' ? val : photoStroke;
-    const currentStrokeWidth = prop === 'strokeWidth' ? Number(val) : photoStrokeWidth;
-    const currentFill = prop === 'fill' ? val : photoFill;
-
-    let currentW = photoWidth;
-    let currentH = photoHeight;
-    let currentX = photoX;
-    let currentY = photoY;
-
-    if (prop === 'width') currentW = Number(val);
-    if (prop === 'height') currentH = Number(val);
-    if (prop === 'x') currentX = Number(val);
-    if (prop === 'y') currentY = Number(val);
-
-    if (prop === 'shape') setPhotoShape(val);
-    if (prop === 'rx') setPhotoRx(Number(val));
-    if (prop === 'ry') setPhotoRy(Number(val));
-    if (prop === 'stroke') setPhotoStroke(val);
-    if (prop === 'strokeWidth') setPhotoStrokeWidth(Number(val));
-    if (prop === 'fill') setPhotoFill(val);
-    if (prop === 'width') setPhotoWidth(Number(val));
-    if (prop === 'height') setPhotoHeight(Number(val));
-    if (prop === 'x') setPhotoX(Number(val));
-    if (prop === 'y') setPhotoY(Number(val));
-
-    canvas.remove(obj);
-
-    const wPx = currentW * displayScale;
-    const hPx = currentH * displayScale;
-    const xPx = currentX * displayScale;
-    const yPx = currentY * displayScale;
-
-    let bgObj;
-    if (currentShape === 'circle') {
-      const radius = Math.min(wPx, hPx) / 2;
-      bgObj = new fabric.Circle({
-        left: 0,
-        top: 0,
-        radius: radius,
-        fill: currentFill,
-        stroke: currentStroke,
-        strokeWidth: currentStrokeWidth,
-        name: 'bg'
-      });
-    } else {
-      bgObj = new fabric.Rect({
-        left: 0,
-        top: 0,
-        width: wPx,
-        height: hPx,
-        rx: currentRx,
-        ry: currentRy,
-        fill: currentFill,
-        stroke: currentStroke,
-        strokeWidth: currentStrokeWidth,
-        name: 'bg'
-      });
-    }
+    const frame = shape === 'circle'
+      ? new fabric.Circle({
+          left: 0,
+          top: 0,
+          radius: nextWidth / 2,
+          fill,
+          stroke,
+          strokeWidth,
+          name: 'bg',
+          borderColor: '#0284c7',
+          cornerColor: '#0284c7'
+        } as any)
+      : new fabric.Rect({
+          left: 0,
+          top: 0,
+          width: nextWidth,
+          height: nextHeight,
+          fill,
+          stroke,
+          strokeWidth,
+          rx: radius,
+          ry: radius,
+          name: 'bg',
+          borderColor: '#0284c7',
+          cornerColor: '#0284c7'
+        } as any);
 
     const label = new fabric.Textbox('{Photo}', {
       left: 5,
-      top: (currentShape === 'circle' ? (Math.min(wPx, hPx) / 2 - 10) : (hPx / 2 - 10)),
-      width: (currentShape === 'circle' ? Math.min(wPx, hPx) - 10 : wPx - 10),
-      fontSize: 20 * displayScale,
+      top: nextHeight / 2 - 10,
+      width: Math.max(20, nextWidth - 10),
+      fontSize: Math.max(10, Math.min(20, nextWidth / 5)),
       fontFamily: 'Outfit',
       fill: '#8c8c9e',
       textAlign: 'center',
-      selectable: false
+      selectable: false,
+      evented: false
     });
 
-    const group = new fabric.Group([bgObj, label], {
-      left: xPx,
-      top: yPx,
+    const replacementGroup = new fabric.Group([frame, label], {
+      left: nextLeft,
+      top: nextTop,
+      angle: obj.angle || 0,
+      opacity: obj.opacity ?? 1,
+      flipX: obj.flipX,
+      flipY: obj.flipY,
       name: '{Photo}',
       borderColor: '#0284c7',
       cornerColor: '#0284c7',
       transparentCorners: false
     } as any);
 
-    (group as any).photoShape = currentShape;
-    (group as any).photoRx = currentRx;
-    (group as any).photoRy = currentRy;
-    (group as any).photoStroke = currentStroke;
-    (group as any).photoStrokeWidth = currentStrokeWidth;
-    (group as any).photoFill = currentFill;
+    (replacementGroup as any).photoShape = shape;
+    (replacementGroup as any).photoRx = radius;
+    (replacementGroup as any).photoRy = radius;
+    (replacementGroup as any).photoStroke = stroke;
+    (replacementGroup as any).photoStrokeWidth = strokeWidth;
+    (replacementGroup as any).photoFill = fill;
 
-    canvas.add(group);
-    canvas.setActiveObject(group);
-    setSelectedObj(group);
+    const oldIndex = canvas.getObjects().indexOf(obj);
+    canvas.remove(obj);
+    canvas.insertAt(oldIndex >= 0 ? oldIndex : canvas.getObjects().length, replacementGroup);
+    canvas.setActiveObject(replacementGroup);
+    setSelectedObj(replacementGroup);
+    setSelectedWidth(Math.round(nextWidth));
+    setSelectedHeight(Math.round(nextHeight));
+    setSelectedLeft(Math.round(nextLeft));
+    setSelectedTop(Math.round(nextTop));
+    setPhotoShape(shape);
+    setPhotoRx(radius);
+    setPhotoRy(radius);
+    setPhotoStroke(stroke);
+    setPhotoStrokeWidth(strokeWidth);
+    setPhotoFill(fill);
+
+    replacementGroup.setCoords();
     canvas.renderAll();
+    syncObjectsList();
+    saveToHistory();
+    triggerAutoSave();
+  };
+  const deleteSelected = () => {
+    const canvas = fabricCanvasRef.current;
+    const obj = selectedObj;
+    if (!canvas || !obj) return;
+    canvas.remove(obj);
+    canvas.discardActiveObject();
+    setSelectedObj(null);
+    canvas.renderAll();
+    syncObjectsList();
     saveToHistory();
     triggerAutoSave();
   };
@@ -851,153 +866,133 @@ export default function CanvasEditor() {
 
     const width = obj.width * obj.scaleX!;
     const height = obj.height * obj.scaleY!;
-    const canvasW = cardW * displayScale;
-    const canvasH = cardH * displayScale;
 
-    if (alignment === 'left') {
-      obj.set('left', 0);
-    } else if (alignment === 'center') {
-      obj.set('left', (canvasW - width) / 2);
-    } else if (alignment === 'right') {
-      obj.set('left', canvasW - width);
-    } else if (alignment === 'top') {
-      obj.set('top', 0);
-    } else if (alignment === 'middle') {
-      obj.set('top', (canvasH - height) / 2);
-    } else if (alignment === 'bottom') {
-      obj.set('top', canvasH - height);
-    }
+    if (alignment === 'left') obj.set('left', 0);
+    else if (alignment === 'center') obj.set('left', (cardW - width) / 2);
+    else if (alignment === 'right') obj.set('left', cardW - width);
+    else if (alignment === 'top') obj.set('top', 0);
+    else if (alignment === 'middle') obj.set('top', (cardH - height) / 2);
+    else if (alignment === 'bottom') obj.set('top', cardH - height);
 
-    obj.setCoords();
-    canvas.renderAll();
-    saveToHistory();
-    triggerAutoSave();
+    obj.setCoords(); canvas.renderAll(); saveToHistory(); triggerAutoSave();
     updateStyleControls(obj);
   };
 
-  const alignSelectedObjects = (alignment: 'left' | 'center' | 'right' | 'top' | 'middle' | 'bottom') => {
+  const moveLayer = (obj: fabric.FabricObject, direction: 'front' | 'back' | 'up' | 'down') => {
     const canvas = fabricCanvasRef.current;
-    if (!canvas) return;
-    const activeObject = canvas.getActiveObject();
-    if (!activeObject || activeObject.type !== 'activeSelection') return;
+    if (!canvas || !obj) return;
 
-    const objects = (activeObject as any).getObjects() as fabric.FabricObject[];
-    const selWidth = activeObject.width!;
-    const selHeight = activeObject.height!;
-
-    objects.forEach((obj) => {
-      const objWidth = obj.width! * obj.scaleX!;
-      const objHeight = obj.height! * obj.scaleY!;
-
-      if (alignment === 'left') {
-        obj.set('left', -selWidth / 2 + objWidth / 2);
-      } else if (alignment === 'center') {
-        obj.set('left', 0);
-      } else if (alignment === 'right') {
-        obj.set('left', selWidth / 2 - objWidth / 2);
-      } else if (alignment === 'top') {
-        obj.set('top', -selHeight / 2 + objHeight / 2);
-      } else if (alignment === 'middle') {
-        obj.set('top', 0);
-      } else if (alignment === 'bottom') {
-        obj.set('top', selHeight / 2 - objHeight / 2);
+    if (direction === 'front') {
+      canvas.bringObjectToFront(obj);
+    } else if (direction === 'back') {
+      const bgImg = canvas.getObjects().find(o => (o as any).isAppBackground);
+      if (bgImg) {
+        const bgIdx = canvas.getObjects().indexOf(bgImg);
+        const curIdx = canvas.getObjects().indexOf(obj);
+        if (curIdx > bgIdx + 1) canvas.moveObjectTo(obj, bgIdx + 1);
+      } else {
+        canvas.sendObjectToBack(obj);
       }
-    });
-
-    activeObject.setCoords();
+    } else if (direction === 'up') {
+      canvas.bringObjectForward(obj);
+    } else if (direction === 'down') {
+      const bgImg = canvas.getObjects().find(o => (o as any).isAppBackground);
+      const bgIdx = bgImg ? canvas.getObjects().indexOf(bgImg) : -1;
+      const curIdx = canvas.getObjects().indexOf(obj);
+      if (curIdx > bgIdx + 1) canvas.moveObjectTo(obj, curIdx - 1);
+    }
     canvas.renderAll();
+    syncObjectsList();
     saveToHistory();
     triggerAutoSave();
   };
 
-  const distributeSelectedObjects = (direction: 'horizontal' | 'vertical') => {
+  const toggleLayerLock = (obj: fabric.FabricObject) => {
     const canvas = fabricCanvasRef.current;
-    if (!canvas) return;
-    const activeObject = canvas.getActiveObject();
-    if (!activeObject || activeObject.type !== 'activeSelection') return;
-
-    const objects = [...(activeObject as any).getObjects()] as fabric.FabricObject[];
-    if (objects.length < 3) return;
-
-    if (direction === 'horizontal') {
-      objects.sort((a, b) => a.left! - b.left!);
-      const first = objects[0];
-      const last = objects[objects.length - 1];
-      const minLeft = first.left!;
-      const maxLeft = last.left!;
-      const totalSpacing = maxLeft - minLeft;
-      const step = totalSpacing / (objects.length - 1);
-      
-      for (let i = 1; i < objects.length - 1; i++) {
-        objects[i].set('left', minLeft + i * step);
-      }
-    } else {
-      objects.sort((a, b) => a.top! - b.top!);
-      const first = objects[0];
-      const last = objects[objects.length - 1];
-      const minTop = first.top!;
-      const maxTop = last.top!;
-      const totalSpacing = maxTop - minTop;
-      const step = totalSpacing / (objects.length - 1);
-      
-      for (let i = 1; i < objects.length - 1; i++) {
-        objects[i].set('top', minTop + i * step);
-      }
-    }
-
-    activeObject.setCoords();
+    if (!canvas || !obj) return;
+    const isLocked = !obj.lockMovementX;
+    obj.set({
+      lockMovementX: isLocked, lockMovementY: isLocked,
+      lockScalingX: isLocked, lockScalingY: isLocked,
+      lockRotation: isLocked, hasControls: !isLocked,
+    });
     canvas.renderAll();
+    syncObjectsList();
     saveToHistory();
     triggerAutoSave();
+    setSelectedObj(obj);
   };
 
   const handleSave = async () => {
     const canvas = fabricCanvasRef.current;
     if (!canvas || !activeTemplate) return;
-    const data = JSON.stringify((canvas as any).toJSON(['name', 'photoShape', 'photoRx', 'photoRy', 'photoStroke', 'photoStrokeWidth', 'photoFill']));
-    const designs = getDesignsArray(activeTemplate);
-    designs[activeSideIndex] = data;
+
+    const bgImg = canvas.getObjects().find(o => (o as any).isAppBackground);
+    if (bgImg) {
+      bgImg.set({
+        originX: "left",
+        originY: "top",
+        left: 0,
+        top: 0
+      });
+      bgImg.setCoords();
+    }
+
+    const serialized = (canvas as any).toJSON(['name', 'photoShape', 'photoRx', 'photoRy', 'photoStroke', 'photoStrokeWidth', 'photoFill', 'isAppBackground']);
+    serialized.isHiRes = true;
+    const data = JSON.stringify(serialized);
 
     await saveTemplate({ 
-      frontDesign: JSON.stringify(designs),
-      backDesign: designs[1] || '{}'
+      frontDesign: JSON.stringify([data]),
+      backDesign: '{}'
     });
-    alert(`Side ${activeSideIndex + 1} template design saved successfully!`);
+    alert('Template design successfully saved!');
   };
 
   const triggerAutoSave = () => {
     const canvas = fabricCanvasRef.current;
     if (!canvas || !activeTemplate) return;
-    const data = JSON.stringify((canvas as any).toJSON(['name', 'photoShape', 'photoRx', 'photoRy', 'photoStroke', 'photoStrokeWidth', 'photoFill']));
-    const designs = getDesignsArray(activeTemplate);
-    designs[activeSideIndex] = data;
+
+    const bgImg = canvas.getObjects().find(o => (o as any).isAppBackground);
+    if (bgImg) {
+      bgImg.set({
+        originX: "left",
+        originY: "top",
+        left: 0,
+        top: 0
+      });
+      bgImg.setCoords();
+    }
+
+    const serialized = (canvas as any).toJSON(['name', 'photoShape', 'photoRx', 'photoRy', 'photoStroke', 'photoStrokeWidth', 'photoFill', 'isAppBackground']);
+    serialized.isHiRes = true;
+    const data = JSON.stringify(serialized);
 
     saveTemplate({ 
-      frontDesign: JSON.stringify(designs),
-      backDesign: designs[1] || '{}'
+      frontDesign: JSON.stringify([data]),
+      backDesign: '{}'
     });
   };
 
-  // ─── Setup Screen ───
+  // â”€â”€â”€â”€â”€â”€â”€â”€ SETUP DIALOGUE â”€â”€â”€â”€â”€â”€â”€â”€
   if (showSetup) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[500px] gap-6">
-        <div className="glass-panel p-8 rounded-2xl w-full max-w-lg space-y-6">
+      <div className="flex flex-col items-center justify-center min-h-[480px] p-6 bg-[#0e0e10]">
+        <div className="p-8 rounded-2xl w-full max-w-md bg-dark-900 shadow-2xl space-y-6">
           <div className="text-center">
-            <div className="inline-flex items-center justify-center w-14 h-14 bg-primary-500/10 border border-primary-500/20 rounded-2xl mb-4">
-              <Maximize className="w-7 h-7 text-primary-500" />
+            <div className="inline-flex items-center justify-center w-14 h-14 bg-primary-500/10 rounded-2xl mb-4">
+              <Settings className="w-7 h-7 text-primary-500" />
             </div>
-            <h2 className="text-xl font-bold text-zinc-100">Card Size & Setup</h2>
-            <p className="text-zinc-400 text-sm mt-1">Configure dimensions and card sides before designing your template.</p>
+            <h2 className="text-lg font-black uppercase tracking-wider text-zinc-100">Card Setup</h2>
+            <p className="text-zinc-500 text-xs mt-1">Configure layout sizing for single-sided card printing.</p>
           </div>
 
-          {/* Preset Selector */}
           <div>
-            <label className="text-[10px] text-zinc-500 font-bold uppercase block mb-1">Card Size Preset</label>
+            <label className="text-[10px] text-zinc-500 font-bold uppercase block mb-1">Preset Dimension</label>
             <select
               value={cardPreset}
               onChange={(e) => handlePresetChange(e.target.value)}
-              className="w-full bg-dark-800 border border-zinc-800 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-primary-500 transition-colors"
+              className="w-full bg-dark-800 border-none rounded-xl px-3 py-2.5 text-xs text-zinc-300 focus:outline-none"
             >
               {Object.entries(CARD_PRESETS).map(([key, val]) => (
                 <option key={key} value={key}>{val.label}</option>
@@ -1005,7 +1000,6 @@ export default function CanvasEditor() {
             </select>
           </div>
 
-          {/* Custom Dimensions */}
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="text-[10px] text-zinc-500 font-bold uppercase block mb-1">Width (mm)</label>
@@ -1014,7 +1008,7 @@ export default function CanvasEditor() {
                 value={cardWidthMM}
                 step={0.1}
                 onChange={(e) => { setCardWidthMM(Number(e.target.value)); setCardPreset('custom'); }}
-                className="w-full bg-dark-800 border border-zinc-800 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-primary-500"
+                className="w-full bg-dark-800 border-none rounded-xl px-3 py-2.5 text-xs text-zinc-300 focus:outline-none"
               />
             </div>
             <div>
@@ -1024,306 +1018,344 @@ export default function CanvasEditor() {
                 value={cardHeightMM}
                 step={0.1}
                 onChange={(e) => { setCardHeightMM(Number(e.target.value)); setCardPreset('custom'); }}
-                className="w-full bg-dark-800 border border-zinc-800 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-primary-500"
+                className="w-full bg-dark-800 border-none rounded-xl px-3 py-2.5 text-xs text-zinc-300 focus:outline-none"
               />
             </div>
           </div>
 
-          {/* Sides configuration */}
-          <div className="space-y-3">
-            <div>
-              <label className="text-[10px] text-zinc-500 font-bold uppercase block mb-1">Card Sides</label>
-              <select
-                value={sidesMode}
-                onChange={(e) => handleSidesModeChange(e.target.value as '1' | '2' | 'custom')}
-                className="w-full bg-dark-800 border border-zinc-800 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-primary-500 transition-colors"
-              >
-                <option value="1">Front Side Only (1 Side)</option>
-                <option value="2">Double Sided (2 Sides)</option>
-                <option value="custom">Custom Multi-Sides...</option>
-              </select>
-            </div>
-
-            {sidesMode === 'custom' && (
-              <div>
-                <label className="text-[10px] text-zinc-500 font-bold uppercase block mb-1">Number of Sides</label>
-                <input
-                  type="number"
-                  min={1}
-                  max={10}
-                  value={sidesCount}
-                  onChange={(e) => setSidesCount(Math.max(1, Math.min(10, Number(e.target.value))))}
-                  className="w-full bg-dark-800 border border-zinc-800 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-primary-500"
-                />
-              </div>
-            )}
-          </div>
-
-          {/* Pixel Preview */}
-          <div className="bg-dark-800/60 border border-zinc-800 rounded-xl p-4 text-center">
-            <p className="text-zinc-400 text-xs">At 300 DPI this card will be</p>
-            <p className="text-zinc-100 font-bold text-lg mt-1">
-              {Math.round(cardWidthMM * MM_TO_PX)} × {Math.round(cardHeightMM * MM_TO_PX)} px
+          <div className="bg-dark-800/40 rounded-xl p-4 text-center">
+            <p className="text-zinc-500 text-[10px] uppercase font-bold tracking-wider">Canvas Resolution (300 DPI)</p>
+            <p className="text-zinc-200 font-bold text-base mt-1 font-mono">
+              {Math.round(cardWidthMM * MM_TO_PX)} &times; {Math.round(cardHeightMM * MM_TO_PX)} px
             </p>
           </div>
 
           <button
-            onClick={handleApplySize}
-            className="w-full bg-primary-500 hover:bg-primary-600 active:bg-primary-700 text-white font-bold py-3 px-4 rounded-xl transition-all shadow-lg shadow-primary-500/20 text-sm"
+            onClick={handleApplySetup}
+            className="w-full bg-primary-500 hover:bg-primary-600 text-white font-bold py-3 rounded-xl text-xs tracking-wider uppercase transition-colors"
           >
-            Continue to Designer →
+            Create Canvas &rarr;
           </button>
         </div>
       </div>
     );
   }
 
-  // Generate tabs for designer
-  const tabsList = Array.from({ length: sidesCount }).map((_, idx) => `Side ${idx + 1}`);
-
-  // ─── Main Editor ───
   return (
-    <div className="flex flex-col lg:flex-row gap-6 h-full min-h-[500px]">
-      {/* Sidebar Toolbar */}
-      <div className="glass-panel p-4 rounded-2xl flex flex-col gap-4 lg:w-64">
-        {/* Card size quick info */}
-        <button
-          onClick={() => setShowSetup(true)}
-          className="w-full flex items-center justify-between p-2.5 bg-dark-800 border border-zinc-800 hover:border-zinc-700 rounded-xl text-xs transition-all"
-        >
-          <span className="text-zinc-400 font-semibold">Card: {cardWidthMM} × {cardHeightMM} mm</span>
-          <Settings className="w-3.5 h-3.5 text-zinc-500" />
-        </button>
-
-        <div>
-          <h3 className="font-bold text-zinc-200 text-sm">Placeholders</h3>
-          <p className="text-zinc-500 text-[10px]">Auto-generated from your Excel fields</p>
-        </div>
-        {cardFields.length > 0 ? (
-          <div className="grid grid-cols-2 gap-2 max-h-[260px] overflow-y-auto pr-1">
-            {cardFields.map((field) => {
-              if (field === '{Photo}') {
-                return (
-                  <button key={field} onClick={addPhotoPlaceholder} className="flex flex-col items-center justify-center gap-1.5 p-3 bg-dark-800 border border-zinc-800 hover:border-zinc-700 rounded-xl text-zinc-300 text-xs font-semibold hover:bg-zinc-800 transition-all">
-                    <ImageIcon className="w-4.5 h-4.5 text-emerald-500" /><span>Photo</span>
-                  </button>
-                );
-              }
-
-              return (
-                <button 
-                  key={field} 
-                  onClick={() => setTextPlacementMode(textPlacementMode === `{${field}}` ? null : `{${field}}`)} 
-                  className={`flex flex-col items-center justify-center gap-1.5 p-3 border rounded-xl text-xs font-semibold transition-all ${
-                    textPlacementMode === `{${field}}` 
-                      ? 'bg-primary-500/20 border-primary-500 text-primary-400' 
-                      : 'bg-dark-800 border-zinc-800 hover:border-zinc-700 text-zinc-300 hover:bg-zinc-800'
-                  }`}
-                >
-                  <Type className="w-4.5 h-4.5 text-primary-500" />
-                  <span className="truncate max-w-full text-center">{field}</span>
-                </button>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="bg-dark-800/50 border border-zinc-800 rounded-xl p-4 text-center">
-            <p className="text-zinc-500 text-xs leading-relaxed">No fields configured yet.<br/>Import an Excel file first and select which columns to show on the ID card.</p>
-          </div>
-        )}
-
-        <div className="border-t border-zinc-800/80 pt-4">
-          <h3 className="font-bold text-zinc-200 text-sm mb-2">Upload Background</h3>
-          <input type="file" accept="image/*" onChange={handleBackgroundUpload} className="hidden" id="bg-upload-input" />
-          <label htmlFor="bg-upload-input" className="w-full bg-dark-800 hover:bg-zinc-800 border border-zinc-700 text-zinc-300 font-semibold py-2 px-3 rounded-xl flex items-center justify-center gap-1.5 cursor-pointer transition-all text-xs">
-            <Upload className="w-3.5 h-3.5" /> Background Image
-          </label>
-        </div>
-
-        {/* History tools */}
-        <div className="border-t border-zinc-800/80 pt-4 flex gap-2">
-          <button onClick={handleUndo} disabled={historyIndex <= 0} className="flex-1 bg-dark-800 border border-zinc-800 hover:border-zinc-700 disabled:opacity-30 rounded-xl p-2 flex items-center justify-center" title="Undo">
-            <Undo className="w-4 h-4 text-zinc-300" />
-          </button>
-          <button onClick={handleRedo} disabled={historyIndex >= history.length - 1} className="flex-1 bg-dark-800 border border-zinc-800 hover:border-zinc-700 disabled:opacity-30 rounded-xl p-2 flex items-center justify-center" title="Redo">
-            <Redo className="w-4 h-4 text-zinc-300" />
-          </button>
-        </div>
-      </div>
-
-      {/* Editor Center Area */}
-      <div className="flex-1 flex flex-col items-center justify-center p-4 bg-dark-800/40 rounded-2xl border border-zinc-800/50">
-        {/* Card Side Toggle Tabs */}
-        <div className="flex flex-wrap gap-1 bg-dark-900 border border-zinc-800 p-1 rounded-xl mb-6 max-w-full overflow-x-auto">
-          {tabsList.map((tabName, idx) => (
-            <button
-              key={idx}
-              onClick={() => setActiveSideIndex(idx)}
-              className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-all ${activeSideIndex === idx ? 'bg-primary-500 text-white' : 'text-zinc-400 hover:text-zinc-200'}`}
-            >
-              {tabName}
-            </button>
-          ))}
-        </div>
-
-        <div className="relative border border-zinc-700/50 rounded-xl overflow-auto shadow-2xl bg-dark-900 max-w-full max-h-[500px] p-6 flex items-center justify-center">
-          {textPlacementMode && (
-            <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-primary-500 text-white px-4 py-2 rounded-full shadow-lg text-xs font-bold flex items-center gap-2 animate-bounce z-50">
-              <Type className="w-4 h-4" />
-              <span>Click once or drag on canvas to place {textPlacementMode}</span>
-            </div>
-          )}
-          <div className="shrink-0">
-            <canvas ref={canvasRef} />
-          </div>
-        </div>
-
-        {/* Zoom Controls */}
-        <div className="flex items-center gap-2 mt-4 bg-dark-900/80 border border-zinc-800 p-1.5 rounded-xl shadow-lg shrink-0">
-          <button 
-            onClick={() => setZoom(prev => Math.max(0.2, Number((prev - 0.1).toFixed(1))))} 
-            className="w-8 h-8 flex items-center justify-center rounded-lg bg-dark-800 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 font-bold text-sm transition-colors"
-            title="Zoom Out"
-          >
-            -
-          </button>
-          <span className="text-xs text-zinc-300 px-2 font-mono font-bold w-12 text-center">
-            {Math.round(zoom * 100)}%
+    <div className="flex flex-col h-[calc(100vh-120px)] bg-[#0e0e10] rounded-2xl overflow-hidden text-zinc-350 relative shadow-xl">
+      
+      {/* PHOTOSHOP TOP OPTIONS BAR */}
+      <div className="h-12 bg-[#141416] px-4 flex items-center justify-between shrink-0 text-xs shadow-sm">
+        <div className="flex items-center gap-3">
+          <span className="font-extrabold text-[10px] uppercase tracking-wider text-zinc-500">Document</span>
+          <span className="text-zinc-300 font-bold font-mono text-[11px] bg-dark-900 px-2 py-0.5 rounded">
+            {cardWidthMM} &times; {cardHeightMM} mm ({Math.round(cardWidthMM * MM_TO_PX)} &times; {Math.round(cardHeightMM * MM_TO_PX)} px)
           </span>
-          <button 
-            onClick={() => setZoom(prev => Math.min(3, Number((prev + 0.1).toFixed(1))))} 
-            className="w-8 h-8 flex items-center justify-center rounded-lg bg-dark-800 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 font-bold text-sm transition-colors"
-            title="Zoom In"
-          >
-            +
-          </button>
-          <div className="w-px h-5 bg-zinc-800 mx-1"></div>
-          <button 
-            onClick={() => setZoom(1)} 
-            className="px-2.5 h-8 flex items-center justify-center rounded-lg bg-dark-800 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-zinc-200 text-xs font-semibold transition-colors"
-            title="Reset to 100%"
-          >
-            100%
-          </button>
-          <button 
-            onClick={() => setZoom(0.8)} 
-            className="px-2.5 h-8 flex items-center justify-center rounded-lg bg-dark-800 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-zinc-200 text-xs font-semibold transition-colors"
-            title="Fit Screen"
-          >
-            Fit
-          </button>
         </div>
 
-        <p className="text-zinc-500 text-[10px] mt-4 uppercase tracking-wider font-semibold">
-          Canvas: {cardW} × {cardH} px ({cardWidthMM} × {cardHeightMM} mm @ 300 DPI)
-        </p>
+        <div className="flex items-center gap-2">
+          <button onClick={handleUndo} disabled={historyIndex <= 0} className="p-1.5 hover:bg-zinc-800 rounded disabled:opacity-20 text-zinc-400 hover:text-zinc-200 transition-colors" title="Undo (Ctrl+Z)">
+            <Undo className="w-4 h-4" />
+          </button>
+          <button onClick={handleRedo} disabled={historyIndex >= history.length - 1} className="p-1.5 hover:bg-zinc-800 rounded disabled:opacity-20 text-zinc-400 hover:text-zinc-200 transition-colors" title="Redo (Ctrl+Y)">
+            <Redo className="w-4 h-4" />
+          </button>
+          <div className="w-px h-4 bg-zinc-800 mx-1"></div>
+          <button onClick={handleSave} className="flex items-center gap-1.5 bg-primary-500 hover:bg-primary-600 text-white px-3.5 py-1.5 rounded-lg font-bold transition-all shadow-md">
+            <Save className="w-3.5 h-3.5" /> Save Template
+          </button>
+        </div>
       </div>
 
-      {/* Sidebar Properties Panel */}
-      <div className="glass-panel p-4 rounded-2xl flex flex-col gap-4 lg:w-64">
-        <div className="flex items-center justify-between">
-          <h3 className="font-bold text-zinc-200 text-sm">Properties</h3>
-          <button onClick={handleSave} className="bg-primary-500 hover:bg-primary-600 text-white p-1.5 rounded-lg transition-all" title="Save Template Data">
-            <Save className="w-4 h-4" />
-          </button>
+      <div className="flex-1 flex overflow-hidden relative">
+
+        {/* LEFT PANEL: Variables & Layers tabbed panel with no border borders */}
+        <div className="w-64 bg-[#141416] flex flex-col shrink-0 shadow-lg">
+          {/* Tab selector */}
+          <div className="flex bg-[#121214]">
+            <button
+              onClick={() => setActiveLeftTab('variables')}
+              className={`flex-1 py-2.5 text-[10px] uppercase font-bold tracking-wider transition-all ${
+                activeLeftTab === 'variables' 
+                  ? 'text-zinc-200 bg-[#141416]' 
+                  : 'text-zinc-500 hover:text-zinc-400'
+              }`}
+            >
+              Excel Fields
+            </button>
+            <button
+              onClick={() => setActiveLeftTab('layers')}
+              className={`flex-1 py-2.5 text-[10px] uppercase font-bold tracking-wider transition-all ${
+                activeLeftTab === 'layers' 
+                  ? 'text-zinc-200 bg-[#141416]' 
+                  : 'text-zinc-500 hover:text-zinc-400'
+              }`}
+            >
+              Layers ({canvasObjects.length})
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-4 space-y-2">
+            {activeLeftTab === 'variables' ? (
+              <div className="space-y-2">
+                {cardFields.length > 0 ? (
+                  cardFields.map((field) => {
+                    if (field === '{Photo}') {
+                      return (
+                        <button
+                          key={field}
+                          onClick={addPhotoPlaceholder}
+                          className="w-full flex items-center justify-between p-3 bg-emerald-500/5 hover:bg-emerald-500/10 rounded-xl text-xs font-bold text-zinc-300 transition-all text-left"
+                        >
+                          <span>Photo Frame</span>
+                          <Plus className="w-4 h-4 text-emerald-400" />
+                        </button>
+                      );
+                    }
+                    return (
+                      <button
+                        key={field}
+                        onClick={() => addTextVariable(field)}
+                        className="w-full flex items-center justify-between p-3 bg-dark-850 hover:bg-zinc-800 rounded-xl text-xs font-bold text-zinc-300 transition-all text-left"
+                      >
+                        <span className="truncate">{field}</span>
+                        <Plus className="w-4 h-4 text-primary-450" />
+                      </button>
+                    );
+                  })
+                ) : (
+                  <div className="text-center py-8 text-zinc-655 text-[10px]">
+                    No variables. Load an Excel file.
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                {canvasObjects.length > 0 ? (
+                  canvasObjects.map((obj, idx) => {
+                    const isSelected = selectedObj === obj;
+                    const isLocked = obj.lockMovementX;
+                    let label = obj.type || 'Object';
+                    if ((obj as any).name) label = (obj as any).name;
+                    else if (obj.type === 'textbox' || obj.type === 'i-text') label = `T: ${(obj as any).text?.substring(0, 15)}`;
+
+                    return (
+                      <div
+                        key={idx}
+                        onClick={() => {
+                          const canvas = fabricCanvasRef.current;
+                          if (canvas) { canvas.setActiveObject(obj); canvas.renderAll(); }
+                        }}
+                        className={`flex items-center justify-between px-3 py-2 rounded-xl text-xs cursor-pointer transition-all ${
+                          isSelected 
+                            ? 'bg-primary-500/15 text-primary-300 font-bold'
+                            : 'bg-dark-850/40 text-zinc-450 hover:bg-dark-800 hover:text-zinc-250'
+                        }`}
+                      >
+                        <span className="truncate max-w-[130px]">{label}</span>
+                        <div className="flex items-center gap-1 shrink-0" onClick={e => e.stopPropagation()}>
+                          <button
+                            onClick={() => toggleLayerLock(obj)}
+                            className="p-1 hover:bg-zinc-800 rounded text-zinc-550 hover:text-zinc-200"
+                            title={isLocked ? "Unlock" : "Lock"}
+                          >
+                            {isLocked ? <Lock className="w-3.5 h-3.5 text-rose-500" /> : <Unlock className="w-3.5 h-3.5" />}
+                          </button>
+                          <button
+                            onClick={() => moveLayer(obj, 'up')}
+                            className="p-1 hover:bg-zinc-800 rounded text-zinc-550 hover:text-zinc-200"
+                            title="Move Up"
+                          >
+                            <ArrowUp className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => moveLayer(obj, 'down')}
+                            className="p-1 hover:bg-zinc-800 rounded text-zinc-550 hover:text-zinc-200"
+                            title="Move Down"
+                          >
+                            <ArrowDown className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div className="text-center py-8 text-zinc-655 text-[10px]">
+                    No layers on canvas.
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
-        {selectedObj ? (
-          <div className="space-y-4">
-            {/* Alignment Tools Card */}
-            <div className="bg-dark-800/40 border border-zinc-800/80 rounded-xl p-3 space-y-2.5">
-              <label className="text-[10px] text-zinc-500 font-bold uppercase block border-b border-zinc-800/50 pb-1.5">
-                {selectedObj.type === 'activeSelection' ? 'Align & Distribute Selection' : 'Align to Canvas'}
-              </label>
-              
-              <div className="grid grid-cols-6 gap-1">
-                <button 
-                  onClick={() => selectedObj.type === 'activeSelection' ? alignSelectedObjects('left') : alignToCanvas('left')} 
-                  className="bg-dark-800 hover:bg-zinc-800 text-zinc-300 p-1.5 rounded border border-zinc-700 flex justify-center items-center" 
-                  title="Align Left"
-                >
-                  <svg className="w-4 h-4 fill-none stroke-current" viewBox="0 0 24 24" strokeWidth="2"><line x1="4" y1="2" x2="4" y2="22"></line><rect x="8" y="5" width="12" height="6" rx="1"></rect><rect x="8" y="14" width="8" height="5" rx="1"></rect></svg>
-                </button>
-                <button 
-                  onClick={() => selectedObj.type === 'activeSelection' ? alignSelectedObjects('center') : alignToCanvas('center')} 
-                  className="bg-dark-800 hover:bg-zinc-800 text-zinc-300 p-1.5 rounded border border-zinc-700 flex justify-center items-center" 
-                  title="Align Horizontal Center"
-                >
-                  <svg className="w-4 h-4 fill-none stroke-current" viewBox="0 0 24 24" strokeWidth="2"><line x1="12" y1="2" x2="12" y2="22"></line><rect x="6" y="5" width="12" height="5" rx="1"></rect><rect x="8" y="14" width="8" height="5" rx="1"></rect></svg>
-                </button>
-                <button 
-                  onClick={() => selectedObj.type === 'activeSelection' ? alignSelectedObjects('right') : alignToCanvas('right')} 
-                  className="bg-dark-800 hover:bg-zinc-800 text-zinc-300 p-1.5 rounded border border-zinc-700 flex justify-center items-center" 
-                  title="Align Right"
-                >
-                  <svg className="w-4 h-4 fill-none stroke-current" viewBox="0 0 24 24" strokeWidth="2"><line x1="20" y1="2" x2="20" y2="22"></line><rect x="4" y="5" width="12" height="6" rx="1"></rect><rect x="8" y="14" width="8" height="5" rx="1"></rect></svg>
-                </button>
-                <button 
-                  onClick={() => selectedObj.type === 'activeSelection' ? alignSelectedObjects('top') : alignToCanvas('top')} 
-                  className="bg-dark-800 hover:bg-zinc-800 text-zinc-300 p-1.5 rounded border border-zinc-700 flex justify-center items-center" 
-                  title="Align Top"
-                >
-                  <svg className="w-4 h-4 fill-none stroke-current" viewBox="0 0 24 24" strokeWidth="2"><line x1="2" y1="4" x2="22" y2="4"></line><rect x="5" y="8" width="6" height="12" rx="1"></rect><rect x="14" y="8" width="5" height="8" rx="1"></rect></svg>
-                </button>
-                <button 
-                  onClick={() => selectedObj.type === 'activeSelection' ? alignSelectedObjects('middle') : alignToCanvas('middle')} 
-                  className="bg-dark-800 hover:bg-zinc-800 text-zinc-300 p-1.5 rounded border border-zinc-700 flex justify-center items-center" 
-                  title="Align Vertical Center"
-                >
-                  <svg className="w-4 h-4 fill-none stroke-current" viewBox="0 0 24 24" strokeWidth="2"><line x1="2" y1="12" x2="22" y2="12"></line><rect x="5" y="6" width="6" height="12" rx="1"></rect><rect x="14" y="8" width="5" height="8" rx="1"></rect></svg>
-                </button>
-                <button 
-                  onClick={() => selectedObj.type === 'activeSelection' ? alignSelectedObjects('bottom') : alignToCanvas('bottom')} 
-                  className="bg-dark-800 hover:bg-zinc-800 text-zinc-300 p-1.5 rounded border border-zinc-700 flex justify-center items-center" 
-                  title="Align Bottom"
-                >
-                  <svg className="w-4 h-4 fill-none stroke-current" viewBox="0 0 24 24" strokeWidth="2"><line x1="2" y1="20" x2="22" y2="20"></line><rect x="5" y="4" width="6" height="12" rx="1"></rect><rect x="14" y="10" width="5" height="8" rx="1"></rect></svg>
-                </button>
+        {/* CENTER CANVASES WORKSPACE: Features Checkered Photoshop-like pasteboard grid */}
+        <div className="flex-1 bg-[#121214] flex flex-col relative items-center justify-center p-8 overflow-hidden">
+          
+          {/* PHOTOSHOP FLOATING LEFT TOOLBAR */}
+          <div className="absolute left-4 top-4 bg-[#141416]/95 flex flex-col items-center p-1.5 gap-2.5 rounded-xl shadow-2xl backdrop-blur-md z-20">
+            <button 
+              onClick={() => setSelectedTool('select')}
+              className={`w-9 h-9 flex items-center justify-center rounded-lg transition-all ${selectedTool === 'select' ? 'bg-primary-500 text-white shadow-md' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'}`}
+              title="Move & Select Tool (V)"
+            >
+              <MousePointer className="w-4.5 h-4.5" />
+            </button>
+            <button 
+              onClick={() => setSelectedTool('text')}
+              className={`w-9 h-9 flex items-center justify-center rounded-lg transition-all ${selectedTool === 'text' ? 'bg-primary-500 text-white shadow-md' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'}`}
+              title="Type Text Tool (T)"
+            >
+              <TextIcon className="w-4.5 h-4.5" />
+            </button>
+            <div className="w-6 h-px bg-zinc-800 my-0.5"></div>
+            <input type="file" accept="image/*" onChange={handleBackgroundUpload} className="hidden" id="left-bg-upload" />
+            <label 
+              htmlFor="left-bg-upload"
+              className="w-9 h-9 flex items-center justify-center rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 cursor-pointer transition-all"
+              title="Upload Backdrop Image"
+            >
+              <Upload className="w-4.5 h-4.5" />
+            </label>
+          </div>
+          
+          <div className="absolute inset-0 opacity-[0.02] pointer-events-none bg-[radial-gradient(#fff_1px,transparent_1px)] [background-size:16px_16px]"></div>
+          
+          <div 
+            className="relative shadow-2xl bg-zinc-900 overflow-hidden rounded-xl transition-all [background-image:linear-gradient(45deg,#212124_25%,transparent_25%),linear-gradient(-45deg,#212124_25%,transparent_25%),linear-gradient(45deg,transparent_75%,#212124_75%),linear-gradient(-45deg,transparent_75%,#212124_75%)] [background-size:20px_20px] [background-position:0_0,0_10px,10px_-10px,-10px_0px]"
+            style={{ 
+              width: cardW * displayScale * zoom, 
+              height: cardH * displayScale * zoom 
+            }}
+          >
+            <div 
+              style={{ 
+                width: cardW, 
+                height: cardH, 
+                transform: `scale(${displayScale * zoom})`, 
+                transformOrigin: 'top left' 
+              }}
+            >
+              <canvas ref={canvasRef} />
+            </div>
+          </div>
+
+          {/* Floating Zoom & Status Bar */}
+          <div className="absolute bottom-4 flex items-center gap-1.5 bg-[#141416]/95 p-1.5 rounded-xl shadow-2xl backdrop-blur-md z-10 text-[10px] text-zinc-400">
+            <button onClick={() => setZoom(prev => Math.max(0.2, Number((prev - 0.1).toFixed(1))))} className="w-7 h-7 flex items-center justify-center rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300">
+              <Minus className="w-3.5 h-3.5" />
+            </button>
+            <span className="font-mono font-bold w-12 text-center text-zinc-200">{Math.round(zoom * 100)}%</span>
+            <button onClick={() => setZoom(prev => Math.min(3, Number((prev + 0.1).toFixed(1))))} className="w-7 h-7 flex items-center justify-center rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300">
+              <Plus className="w-3.5 h-3.5" />
+            </button>
+            <div className="w-px h-4 bg-zinc-850 mx-1"></div>
+            <button onClick={() => setZoom(1)} className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-bold transition-all">100%</button>
+            <button onClick={() => setZoom(0.85)} className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-bold transition-all">Fit</button>
+          </div>
+        </div>
+
+        {/* PHOTOSHOP RIGHT PROPERTY PANEL: Character & Paragraph */}
+        <div className="w-72 bg-[#141416] flex flex-col overflow-y-auto shrink-0 p-4 space-y-4 shadow-xl">
+          <div className="flex items-center justify-between pb-1.5 border-b border-zinc-800/40">
+            <span className="text-[10px] font-black uppercase tracking-wider text-zinc-450">Properties Inspector</span>
+            <Settings className="w-3.5 h-3.5 text-zinc-550" />
+          </div>
+
+          {selectedObj ? (
+            <div className="space-y-4 text-xs">
+              {/* Properties Geometry block */}
+              <div className="bg-dark-900/40 rounded-xl p-3.5 space-y-2.5">
+                <span className="text-[9px] font-black text-zinc-500 uppercase block mb-1">Transform</span>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[9px] text-zinc-550 block mb-0.5">X Position</label>
+                    <input type="number" value={selectedLeft} onChange={(e) => modifyPosition('left', Number(e.target.value))} className="w-full bg-dark-800 border-none rounded-lg px-2.5 py-1.5 focus:outline-none text-zinc-200" />
+                  </div>
+                  <div>
+                    <label className="text-[9px] text-zinc-555 block mb-0.5">Y Position</label>
+                    <input type="number" value={selectedTop} onChange={(e) => modifyPosition('top', Number(e.target.value))} className="w-full bg-dark-800 border-none rounded-lg px-2.5 py-1.5 focus:outline-none text-zinc-200" />
+                  </div>
+                  <div>
+                    <label className="text-[9px] text-zinc-555 block mb-0.5">Width</label>
+                    <input type="number" value={selectedWidth} onChange={(e) => modifyPosition('width', Number(e.target.value))} className="w-full bg-dark-800 border-none rounded-lg px-2.5 py-1.5 focus:outline-none text-zinc-200" />
+                  </div>
+                  <div>
+                    <label className="text-[9px] text-zinc-555 block mb-0.5">Height</label>
+                    <input type="number" value={selectedHeight} onChange={(e) => modifyPosition('height', Number(e.target.value))} className="w-full bg-dark-800 border-none rounded-lg px-2.5 py-1.5 focus:outline-none text-zinc-200" />
+                  </div>
+                  <div>
+                    <label className="text-[9px] text-zinc-555 block mb-0.5">Rotation (Â°)</label>
+                    <input 
+                      type="number" 
+                      value={rotation} 
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        setRotation(val);
+                        if (selectedObj) {
+                          selectedObj.set('angle', val);
+                          selectedObj.setCoords();
+                          fabricCanvasRef.current?.renderAll();
+                          saveToHistory();
+                          triggerAutoSave();
+                        }
+                      }} 
+                      className="w-full bg-dark-800 border-none rounded-lg px-2.5 py-1.5 focus:outline-none text-zinc-200" 
+                    />
+                  </div>
+                </div>
               </div>
 
-              {selectedObj.type === 'activeSelection' && (
-                <div className="grid grid-cols-2 gap-1.5 pt-1.5 border-t border-zinc-800/40">
-                  <button 
-                    onClick={() => distributeSelectedObjects('horizontal')} 
-                    className="bg-dark-800 hover:bg-zinc-800 text-zinc-300 py-1.5 px-2 rounded border border-zinc-700 flex items-center justify-center gap-1.5 text-[10px] font-bold" 
-                    title="Distribute Center Horizontally"
-                  >
-                    <svg className="w-3.5 h-3.5 fill-none stroke-current" viewBox="0 0 24 24" strokeWidth="2"><line x1="4" y1="2" x2="4" y2="22"></line><line x1="20" y1="2" x2="20" y2="22"></line><rect x="9" y="7" width="6" height="10" rx="1"></rect></svg>
-                    Distribute H
+              <div className="bg-dark-900/40 rounded-xl p-3.5 space-y-2.5">
+                <span className="text-[9px] font-black text-zinc-500 uppercase block">Appearance</span>
+                <div>
+                  <div className="mb-1 flex items-center justify-between"><label className="text-[9px] text-zinc-550">Opacity</label><span className="text-[10px] font-mono text-zinc-300">{opacity}%</span></div>
+                  <input type="range" min="0" max="100" value={opacity} onChange={(e) => modifyOpacity(Number(e.target.value))} className="w-full accent-sky-500" />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <button onClick={() => toggleFlip('x')} className={`flex items-center justify-center gap-1.5 rounded-lg py-2 text-[10px] font-bold transition-colors ${selectedObj.flipX ? 'bg-primary-500 text-white' : 'bg-dark-800 text-zinc-400 hover:text-zinc-200'}`}><FlipHorizontal className="h-3.5 w-3.5" /> Flip horizontal</button>
+                  <button onClick={() => toggleFlip('y')} className={`flex items-center justify-center gap-1.5 rounded-lg py-2 text-[10px] font-bold transition-colors ${selectedObj.flipY ? 'bg-primary-500 text-white' : 'bg-dark-800 text-zinc-400 hover:text-zinc-200'}`}><FlipVertical className="h-3.5 w-3.5" /> Flip vertical</button>
+                </div>
+              </div>
+
+              {/* Alignments Panel */}
+              <div className="bg-dark-900/40 rounded-xl p-3.5 space-y-2.5">
+                <span className="text-[9px] font-black text-zinc-500 uppercase block mb-1">Align Layout</span>
+                <div className="grid grid-cols-6 gap-1">
+                  <button onClick={() => alignToCanvas('left')} className="bg-dark-800 hover:bg-zinc-800 p-1.5 rounded-lg flex justify-center text-zinc-400 hover:text-zinc-200" title="Align Left">
+                    <svg className="w-3.5 h-3.5 fill-none stroke-current" viewBox="0 0 24 24" strokeWidth="2"><line x1="4" y1="2" x2="4" y2="22"></line><rect x="8" y="5" width="12" height="6" rx="1"></rect></svg>
                   </button>
-                  <button 
-                    onClick={() => distributeSelectedObjects('vertical')} 
-                    className="bg-dark-800 hover:bg-zinc-800 text-zinc-300 py-1.5 px-2 rounded border border-zinc-700 flex items-center justify-center gap-1.5 text-[10px] font-bold" 
-                    title="Distribute Center Vertically"
-                  >
-                    <svg className="w-3.5 h-3.5 fill-none stroke-current" viewBox="0 0 24 24" strokeWidth="2"><line x1="2" y1="4" x2="22" y2="4"></line><line x1="20" y1="2" x2="20" y2="22"></line><rect x="7" y="9" width="10" height="6" rx="1"></rect></svg>
-                    Distribute V
+                  <button onClick={() => alignToCanvas('center')} className="bg-dark-800 hover:bg-zinc-800 p-1.5 rounded-lg flex justify-center text-zinc-400 hover:text-zinc-200" title="Center Horizontally">
+                    <svg className="w-3.5 h-3.5 fill-none stroke-current" viewBox="0 0 24 24" strokeWidth="2"><line x1="12" y1="2" x2="12" y2="22"></line><rect x="6" y="5" width="12" height="5" rx="1"></rect></svg>
+                  </button>
+                  <button onClick={() => alignToCanvas('right')} className="bg-dark-800 hover:bg-zinc-800 p-1.5 rounded-lg flex justify-center text-zinc-400 hover:text-zinc-200" title="Align Right">
+                    <svg className="w-3.5 h-3.5 fill-none stroke-current" viewBox="0 0 24 24" strokeWidth="2"><line x1="20" y1="2" x2="20" y2="22"></line><rect x="4" y="5" width="12" height="6" rx="1"></rect></svg>
+                  </button>
+                  <button onClick={() => alignToCanvas('top')} className="bg-dark-800 hover:bg-zinc-800 p-1.5 rounded-lg flex justify-center text-zinc-400 hover:text-zinc-200" title="Align Top">
+                    <svg className="w-3.5 h-3.5 fill-none stroke-current" viewBox="0 0 24 24" strokeWidth="2"><line x1="2" y1="4" x2="22" y2="4"></line><rect x="5" y="8" width="6" height="12" rx="1"></rect></svg>
+                  </button>
+                  <button onClick={() => alignToCanvas('middle')} className="bg-dark-800 hover:bg-zinc-800 p-1.5 rounded-lg flex justify-center text-zinc-400 hover:text-zinc-200" title="Center Vertically">
+                    <svg className="w-3.5 h-3.5 fill-none stroke-current" viewBox="0 0 24 24" strokeWidth="2"><line x1="2" y1="12" x2="22" y2="12"></line><rect x="5" y="6" width="6" height="12" rx="1"></rect></svg>
+                  </button>
+                  <button onClick={() => alignToCanvas('bottom')} className="bg-dark-800 hover:bg-zinc-800 p-1.5 rounded-lg flex justify-center text-zinc-400 hover:text-zinc-200" title="Align Bottom">
+                    <svg className="w-3.5 h-3.5 fill-none stroke-current" viewBox="0 0 24 24" strokeWidth="2"><line x1="2" y1="20" x2="22" y2="20"></line><rect x="5" y="4" width="6" height="12" rx="1"></rect></svg>
                   </button>
                 </div>
-              )}
-            </div>
+              </div>
 
-            {(selectedObj.type === 'textbox' || selectedObj.type === 'i-text' || selectedObj instanceof fabric.Textbox) && (
-              <div className="space-y-4">
-                {/* CHARACTER PANEL */}
-                <div className="bg-dark-800/40 border border-zinc-800/80 rounded-xl p-3 space-y-3">
-                  <label className="text-[10px] text-zinc-500 font-bold uppercase block border-b border-zinc-800/50 pb-1.5">
-                    Character
-                  </label>
+              {/* Photoshop character formatting */}
+              {(selectedObj.type === 'textbox' || selectedObj.type === 'i-text' || selectedObj instanceof fabric.Textbox) && (
+                <div className="bg-dark-900/40 rounded-xl p-3.5 space-y-3">
+                  <span className="text-[9px] font-black text-zinc-500 uppercase block mb-1">Character & Paragraph</span>
                   
                   <div>
-                    <label className="text-[9px] text-zinc-500 font-bold uppercase block mb-1">Text Content</label>
-                    <textarea 
-                      value={textContent} 
-                      onChange={(e) => modifyTextContent(e.target.value)} 
-                      rows={3}
-                      className="w-full bg-dark-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none text-zinc-200 resize-none font-sans" 
-                    />
+                    <label className="text-[9px] text-zinc-500 block mb-0.5">Text Value</label>
+                    <textarea value={textContent} onChange={(e) => modifyTextContent(e.target.value)} rows={2} className="w-full bg-dark-800 border-none rounded-lg px-2.5 py-1.5 focus:outline-none font-mono resize-none text-zinc-200" />
                   </div>
 
                   <div>
-                    <label className="text-[9px] text-zinc-500 font-bold uppercase block mb-1">Font Family</label>
-                    <select value={fontFamily} onChange={(e) => modifyFontFamily(e.target.value)} className="w-full bg-dark-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none max-h-40 text-zinc-200">
+                    <label className="text-[9px] text-zinc-500 block mb-0.5">Font Family</label>
+                    <select value={fontFamily} onChange={(e) => modifyFontFamily(e.target.value)} className="w-full bg-dark-800 border-none rounded-lg px-2.5 py-1.5 focus:outline-none text-zinc-200 font-bold">
                       <option value="Outfit">Outfit</option>
                       <option value="Arial">Arial</option>
                       <option value="Georgia">Georgia</option>
@@ -1334,157 +1366,95 @@ export default function CanvasEditor() {
                     </select>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="grid grid-cols-2 gap-3">
                     <div>
-                      <label className="text-[9px] text-zinc-500 font-bold uppercase block mb-1">Font Size</label>
-                      <input type="number" value={fontSize} onChange={(e) => modifyFontSize(Number(e.target.value))} className="w-full bg-dark-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none text-zinc-200" />
+                      <label className="text-[9px] text-zinc-555 block mb-0.5">Font Size (pt)</label>
+                      <input type="number" value={fontSize} onChange={(e) => modifyFontSize(Number(e.target.value))} className="w-full bg-dark-800 border-none rounded-lg px-2.5 py-1.5 focus:outline-none text-zinc-250" />
                     </div>
                     <div>
-                      <label className="text-[9px] text-zinc-500 font-bold uppercase block mb-1">Styles</label>
-                      <div className="flex gap-0.5 bg-dark-900 border border-zinc-800 p-0.5 rounded-lg h-7 items-center">
-                        <button onClick={modifyWeight} className={`flex-1 py-0.5 rounded text-[10px] font-bold ${fontWeight === 'bold' ? 'bg-primary-500 text-white' : 'text-zinc-400 hover:text-zinc-200'}`} title="Bold">B</button>
-                        <button onClick={modifyFontStyle} className={`flex-1 py-0.5 rounded text-[10px] italic font-semibold ${fontStyle === 'italic' ? 'bg-primary-500 text-white' : 'text-zinc-400 hover:text-zinc-200'}`} title="Italic">I</button>
-                        <button onClick={modifyUnderline} className={`flex-1 py-0.5 rounded text-[10px] underline font-semibold ${underline ? 'bg-primary-500 text-white' : 'text-zinc-400 hover:text-zinc-200'}`} title="Underline">U</button>
-                        <button onClick={modifyLinethrough} className={`flex-1 py-0.5 rounded text-[10px] line-through font-semibold ${linethrough ? 'bg-primary-500 text-white' : 'text-zinc-400 hover:text-zinc-200'}`} title="Strikethrough">S</button>
+                      <label className="text-[9px] text-zinc-555 block mb-0.5">Styles</label>
+                      <div className="flex gap-0.5 bg-dark-800 p-0.5 rounded-lg h-[32px] items-center">
+                        <button onClick={modifyWeight} className={`flex-1 h-full rounded-md text-[10px] font-extrabold ${fontWeight === 'bold' ? 'bg-primary-500 text-white shadow-md' : 'text-zinc-500 hover:text-zinc-300'}`} title="Bold"><Bold className="w-3.5 h-3.5 mx-auto" /></button>
+                        <button onClick={modifyFontStyle} className={`flex-1 h-full rounded-md text-[10px] italic ${fontStyle === 'italic' ? 'bg-primary-500 text-white shadow-md' : 'text-zinc-500 hover:text-zinc-300'}`} title="Italic"><Italic className="w-3.5 h-3.5 mx-auto" /></button>
+                        <button onClick={modifyUnderline} className={`flex-1 h-full rounded-md text-[10px] underline ${underline ? 'bg-primary-500 text-white shadow-md' : 'text-zinc-500 hover:text-zinc-300'}`} title="Underline"><Underline className="w-3.5 h-3.5 mx-auto" /></button>
                       </div>
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="grid grid-cols-2 gap-3">
                     <div>
-                      <label className="text-[9px] text-zinc-500 font-bold uppercase block mb-1">Leading (Line Height)</label>
-                      <input type="number" step={0.05} value={lineHeight} onChange={(e) => modifyLineHeight(Number(e.target.value))} className="w-full bg-dark-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none text-zinc-200" />
+                      <label className="text-[9px] text-zinc-555 block mb-0.5">Line Spacing</label>
+                      <input type="number" step={0.05} value={lineHeight} onChange={(e) => { (selectedObj as fabric.Textbox).set('lineHeight', Number(e.target.value)); setLineHeight(Number(e.target.value)); fabricCanvasRef.current?.renderAll(); saveToHistory(); triggerAutoSave(); }} className="w-full bg-dark-800 border-none rounded-lg px-2.5 py-1.5 focus:outline-none text-zinc-250" />
                     </div>
                     <div>
-                      <label className="text-[9px] text-zinc-500 font-bold uppercase block mb-1">Tracking (Char Space)</label>
-                      <input type="number" step={1} value={charSpacing} onChange={(e) => modifyCharSpacing(Number(e.target.value))} className="w-full bg-dark-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none text-zinc-200" />
+                      <label className="text-[9px] text-zinc-555 block mb-0.5">Char Spacing</label>
+                      <input type="number" step={1} value={charSpacing} onChange={(e) => { (selectedObj as fabric.Textbox).set('charSpacing', Number(e.target.value)); setCharSpacing(Number(e.target.value)); fabricCanvasRef.current?.renderAll(); saveToHistory(); triggerAutoSave(); }} className="w-full bg-dark-800 border-none rounded-lg px-2.5 py-1.5 focus:outline-none text-zinc-250" />
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="grid grid-cols-2 gap-3">
                     <div>
-                      <label className="text-[9px] text-zinc-500 font-bold uppercase block mb-1">Text Color</label>
-                      <div className="flex items-center gap-1.5 bg-dark-900 border border-zinc-800 rounded-lg p-1">
-                        <input type="color" value={textColor} onChange={(e) => modifyColor(e.target.value)} className="w-5 h-5 rounded border border-zinc-800 cursor-pointer bg-transparent shrink-0" />
-                        <input type="text" value={textColor} onChange={(e) => modifyColor(e.target.value)} className="w-full bg-transparent border-none text-[10px] focus:outline-none font-mono text-zinc-300" />
+                      <label className="text-[9px] text-zinc-555 block mb-0.5">Text Color</label>
+                      <div className="flex items-center bg-dark-800 rounded-lg p-0.5">
+                        <input type="color" value={textColor} onChange={(e) => modifyColor(e.target.value)} className="w-6 h-6 rounded-md cursor-pointer bg-transparent border-none shrink-0" />
+                        <input type="text" value={textColor} onChange={(e) => modifyColor(e.target.value)} className="w-full bg-transparent border-none text-[10px] focus:outline-none font-mono px-1.5 text-zinc-200 shrink" />
                       </div>
                     </div>
                     <div>
-                      <label className="text-[9px] text-zinc-500 font-bold uppercase block mb-1">Text Case</label>
-                      <div className="flex gap-0.5 bg-dark-900 border border-zinc-800 p-0.5 rounded-lg h-7 items-center">
-                        <button onClick={() => modifyTextCase('uppercase')} className="flex-1 py-0.5 text-[9px] font-extrabold text-zinc-400 hover:text-zinc-200" title="ALL CAPS">TT</button>
-                        <button onClick={() => modifyTextCase('lowercase')} className="flex-1 py-0.5 text-[9px] font-semibold text-zinc-400 hover:text-zinc-200" title="lowercase">tt</button>
-                        <button onClick={() => modifyTextCase('titlecase')} className="flex-1 py-0.5 text-[9px] font-bold text-zinc-400 hover:text-zinc-200" title="Title Case">Tt</button>
+                      <label className="text-[9px] text-zinc-555 block mb-0.5">Alignment</label>
+                      <div className="flex gap-0.5 bg-dark-800 p-0.5 rounded-lg h-[32px]">
+                        <button onClick={() => modifyAlign('left')} className="flex-1 hover:bg-zinc-700 rounded-md flex items-center justify-center text-zinc-400"><AlignLeft className="w-3.5 h-3.5" /></button>
+                        <button onClick={() => modifyAlign('center')} className="flex-1 hover:bg-zinc-700 rounded-md flex items-center justify-center text-zinc-400"><AlignCenter className="w-3.5 h-3.5" /></button>
+                        <button onClick={() => modifyAlign('right')} className="flex-1 hover:bg-zinc-700 rounded-md flex items-center justify-center text-zinc-400"><AlignRight className="w-3.5 h-3.5" /></button>
                       </div>
                     </div>
                   </div>
+                </div>
+              )}
 
-                  <div>
-                    <label className="text-[9px] text-zinc-500 font-bold uppercase block mb-1">Text Background Color</label>
-                    <div className="flex items-center gap-1.5 bg-dark-900 border border-zinc-800 rounded-lg p-1">
-                      <input type="color" value={textBackgroundColor === 'transparent' ? '#ffffff' : textBackgroundColor} onChange={(e) => modifyTextBackgroundColor(e.target.value)} className="w-5 h-5 rounded border border-zinc-800 cursor-pointer bg-transparent shrink-0" />
-                      <input type="text" value={textBackgroundColor} onChange={(e) => modifyTextBackgroundColor(e.target.value)} placeholder="transparent" className="w-full bg-transparent border-none text-[10px] focus:outline-none font-mono text-zinc-300" />
-                    </div>
-                  </div>
-                </div>
-
-                {/* PARAGRAPH PANEL */}
-                <div className="bg-dark-800/40 border border-zinc-800/80 rounded-xl p-3 space-y-2.5">
-                  <label className="text-[10px] text-zinc-500 font-bold uppercase block border-b border-zinc-800/50 pb-1.5">
-                    Paragraph
-                  </label>
-                  
-                  <div>
-                    <label className="text-[9px] text-zinc-500 font-bold uppercase block mb-1">Alignment</label>
-                    <div className="flex gap-0.5 bg-dark-900 border border-zinc-800 p-0.5 rounded-lg">
-                      <button onClick={() => modifyAlign('left')} className="flex-1 py-1 rounded text-zinc-400 hover:text-zinc-200 flex justify-center hover:bg-zinc-850" title="Align Left"><AlignLeft className="w-3.5 h-3.5" /></button>
-                      <button onClick={() => modifyAlign('center')} className="flex-1 py-1 rounded text-zinc-400 hover:text-zinc-200 flex justify-center hover:bg-zinc-850" title="Align Center"><AlignCenter className="w-3.5 h-3.5" /></button>
-                      <button onClick={() => modifyAlign('right')} className="flex-1 py-1 rounded text-zinc-400 hover:text-zinc-200 flex justify-center hover:bg-zinc-850" title="Align Right"><AlignRight className="w-3.5 h-3.5" /></button>
-                      <button onClick={() => modifyAlign('justify')} className="flex-1 py-1 rounded text-zinc-400 hover:text-zinc-200 flex justify-center hover:bg-zinc-850" title="Justify"><AlignJustify className="w-3.5 h-3.5" /></button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-            
-            {((selectedObj as any).name === '{Photo}' || selectedObj.type === 'group') && (
-              <div className="space-y-3">
-                <div>
-                  <label className="text-[10px] text-zinc-500 font-bold uppercase block mb-1">Placeholder Shape</label>
-                  <select 
-                    value={photoShape} 
-                    onChange={(e) => modifyPhotoProperty('shape', e.target.value as 'rect' | 'circle')} 
-                    className="w-full bg-dark-800 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none"
-                  >
-                    <option value="rect">Rectangle</option>
-                    <option value="circle">Circle</option>
-                  </select>
-                </div>
-                {photoShape === 'rect' && (
+              {(selectedObj as any).name === '{Photo}' && (
+                <div className="bg-dark-900/40 rounded-xl p-3.5 space-y-3">
+                  <div><span className="text-[9px] font-black text-zinc-500 uppercase">Photo frame</span><p className="mt-1 text-[10px] leading-relaxed text-zinc-600">Photos use centered cover cropping, so portraits always fill the frame.</p></div>
                   <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="text-[10px] text-zinc-500 font-bold uppercase block mb-1">Round X (rx)</label>
-                      <input type="number" min={0} max={100} value={photoRx} onChange={(e) => modifyPhotoProperty('rx', e.target.value)} className="w-full bg-dark-800 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none" />
-                    </div>
-                    <div>
-                      <label className="text-[10px] text-zinc-500 font-bold uppercase block mb-1">Round Y (ry)</label>
-                      <input type="number" min={0} max={100} value={photoRy} onChange={(e) => modifyPhotoProperty('ry', e.target.value)} className="w-full bg-dark-800 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none" />
-                    </div>
+                    <button onClick={() => updatePhotoFrame({ shape: 'rect' })} className={`rounded-lg py-2 text-[10px] font-bold transition-colors ${photoShape === 'rect' ? 'bg-primary-500 text-white' : 'bg-dark-800 text-zinc-400 hover:text-zinc-200'}`}>Rectangle</button>
+                    <button onClick={() => updatePhotoFrame({ shape: 'circle' })} className={`rounded-lg py-2 text-[10px] font-bold transition-colors ${photoShape === 'circle' ? 'bg-primary-500 text-white' : 'bg-dark-800 text-zinc-400 hover:text-zinc-200'}`}>Circle</button>
                   </div>
-                )}
-                <div>
-                  <label className="text-[10px] text-zinc-500 font-bold uppercase block mb-1">Border Color</label>
-                  <div className="flex gap-2">
-                    <input type="color" value={photoStroke} onChange={(e) => modifyPhotoProperty('stroke', e.target.value)} className="w-8 h-8 rounded border border-zinc-800 cursor-pointer bg-transparent" />
-                    <input type="text" value={photoStroke} onChange={(e) => modifyPhotoProperty('stroke', e.target.value)} className="flex-1 bg-dark-800 border border-zinc-800 rounded-lg px-2.5 py-1 text-xs focus:outline-none font-mono" />
+                  {photoShape === 'rect' && <div className="space-y-1.5"><div className="flex items-center justify-between"><label className="text-[9px] text-zinc-550">Corner radius</label><input type="number" min="0" max="300" value={photoRx} onChange={(e) => updatePhotoFrame({ radius: Number(e.target.value) })} className="w-16 rounded-md border-none bg-dark-800 px-2 py-1 text-right text-[10px] font-mono text-zinc-200 focus:outline-none" aria-label="Photo frame corner radius in pixels" /></div><input type="range" min="0" max="120" value={Math.min(photoRx, 120)} onChange={(e) => updatePhotoFrame({ radius: Number(e.target.value) })} className="w-full accent-sky-500" /><p className="text-[9px] text-zinc-600">0 px is square; higher values create softer corners.</p></div>}
+                  <div className="grid grid-cols-2 gap-2">
+                    <div><label className="mb-1 block text-[9px] text-zinc-550">Frame color</label><input type="color" value={photoStroke} onChange={(e) => updatePhotoFrame({ stroke: e.target.value })} className="h-8 w-full cursor-pointer rounded-lg border-0 bg-dark-800 p-1" /></div>
+                    <div><label className="mb-1 block text-[9px] text-zinc-550">Border width</label><input type="number" min="0" max="30" value={photoStrokeWidth} onChange={(e) => updatePhotoFrame({ strokeWidth: Number(e.target.value) })} className="w-full rounded-lg border-none bg-dark-800 px-2.5 py-1.5 text-zinc-200 focus:outline-none" /></div>
                   </div>
                 </div>
-                <div>
-                  <label className="text-[10px] text-zinc-500 font-bold uppercase block mb-1">Border Width</label>
-                  <input type="number" min={0} max={20} value={photoStrokeWidth} onChange={(e) => modifyPhotoProperty('strokeWidth', e.target.value)} className="w-full bg-dark-800 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none" />
-                </div>
-                <div>
-                  <label className="text-[10px] text-zinc-500 font-bold uppercase block mb-1">Placeholder Fill</label>
-                  <div className="flex gap-2">
-                    <input type="color" value={photoFill} onChange={(e) => modifyPhotoProperty('fill', e.target.value)} className="w-8 h-8 rounded border border-zinc-800 cursor-pointer bg-transparent" />
-                    <input type="text" value={photoFill} onChange={(e) => modifyPhotoProperty('fill', e.target.value)} className="flex-1 bg-dark-800 border border-zinc-800 rounded-lg px-2.5 py-1 text-xs focus:outline-none font-mono" />
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-2 border-t border-zinc-850 pt-2">
-                  <div>
-                    <label className="text-[10px] text-zinc-500 font-bold uppercase block mb-1">Width (px)</label>
-                    <input type="number" value={photoWidth} onChange={(e) => modifyPhotoProperty('width', e.target.value)} className="w-full bg-dark-800 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none" />
-                  </div>
-                  <div>
-                    <label className="text-[10px] text-zinc-500 font-bold uppercase block mb-1">Height (px)</label>
-                    <input type="number" value={photoHeight} onChange={(e) => modifyPhotoProperty('height', e.target.value)} className="w-full bg-dark-800 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none" />
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="text-[10px] text-zinc-500 font-bold uppercase block mb-1">Position X</label>
-                    <input type="number" value={photoX} onChange={(e) => modifyPhotoProperty('x', e.target.value)} className="w-full bg-dark-800 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none" />
-                  </div>
-                  <div>
-                    <label className="text-[10px] text-zinc-500 font-bold uppercase block mb-1">Position Y</label>
-                    <input type="number" value={photoY} onChange={(e) => modifyPhotoProperty('y', e.target.value)} className="w-full bg-dark-800 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none" />
-                  </div>
-                </div>
-              </div>
-            )}
+              )}
 
-            <div className="border-t border-zinc-800 pt-4">
-              <button onClick={deleteSelected} className="w-full bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 font-semibold py-2 px-3 rounded-xl flex items-center justify-center gap-1.5 transition-all text-xs">
-                <Trash2 className="w-3.5 h-3.5" /> Delete Layer
+              {/* General shapes formatting */}
+              {['rect', 'circle', 'line'].includes(selectedObj.type) && (
+                <div className="bg-dark-900/40 rounded-xl p-3.5 space-y-2.5">
+                  <span className="text-[9px] font-black text-zinc-500 uppercase block mb-1">Fill & Stroke</span>
+                  <div>
+                    <label className="text-[9px] text-zinc-500 block mb-0.5">Color Fill</label>
+                    <div className="flex items-center bg-dark-800 rounded-lg p-0.5">
+                      <input type="color" value={selectedObj.fill as string || '#ffffff'} onChange={(e) => modifyColor(e.target.value)} className="w-6 h-6 rounded-md cursor-pointer bg-transparent border-none shrink-0" />
+                      <input type="text" value={selectedObj.fill as string || ''} onChange={(e) => modifyColor(e.target.value)} className="w-full bg-transparent border-none text-[10px] focus:outline-none font-mono px-1.5 text-zinc-200 shrink" />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <button
+                onClick={deleteSelected}
+                className="w-full bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/25 py-2.5 rounded-xl flex items-center justify-center gap-1.5 transition-colors font-bold uppercase text-[10px] tracking-wider"
+              >
+                <Trash2 className="w-3.5 h-3.5" /> Delete Element
               </button>
             </div>
-          </div>
-        ) : (
-          <div className="flex-1 flex flex-col items-center justify-center text-zinc-500 text-xs py-8">
-            <Layers className="w-8 h-8 stroke-[1.5] mb-2 opacity-50" />
-            <p>Select any object on the canvas to configure properties.</p>
-          </div>
-        )}
+          ) : (
+            <div className="flex-1 flex flex-col items-center justify-center text-zinc-500 text-center py-10 px-4">
+              <Layers className="w-10 h-10 mb-3 opacity-30 text-primary-500 stroke-[1.2]" />
+              <p className="text-[11px] leading-relaxed font-semibold">Select an object on the canvas layer tree to adjust coordinates, character properties, alignment, color and options.</p>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

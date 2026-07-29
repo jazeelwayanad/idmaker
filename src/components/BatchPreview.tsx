@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useStore, Student } from '../hooks/useStore';
+import { loadTemplateToCanvas } from '../utils/canvasHelper';
 import * as fabric from 'fabric';
 
 if (fabric.FabricObject) {
@@ -62,6 +63,16 @@ export default function BatchPreview() {
   }
 
   // Helper to extract designs array
+
+  const getSafePhotoUrl = async (photoPath: string): Promise<string> => {
+    if (typeof window !== "undefined" && window.api?.files?.readAsBase64) {
+      const dataUrl = await window.api.files.readAsBase64(photoPath);
+      if (dataUrl) return dataUrl;
+    }
+
+    const normalizedPath = photoPath.replace(/\\/g, '/');
+    return `local-photo://load/${normalizedPath}`;
+  };
   const getDesignsArray = (template: any): string[] => {
     if (!template) return ['{}', '{}'];
     try {
@@ -131,16 +142,10 @@ export default function BatchPreview() {
     };
   }, [students.length, activeTemplate?.id, cardW, cardH]);
 
-  // Update preview canvas zoom and dimensions dynamically
+  // Re-render preview when zoom or card dimensions change.
+  // renderPreview applies the display scale + zoom via loadTemplateToCanvas.
   useEffect(() => {
-    const canvas = fabricPreviewRef.current;
-    if (!canvas) return;
-    canvas.setZoom(zoom);
-    canvas.setDimensions({
-      width: cardW * displayScale * zoom,
-      height: cardH * displayScale * zoom
-    });
-    canvas.renderAll();
+    if (!fabricPreviewRef.current) return;
     if (students.length > 0) {
       renderPreview(students[activeStudentIndex], activePreviewSideIdx);
     }
@@ -152,157 +157,150 @@ export default function BatchPreview() {
     }
   }, [activeStudentIndex, students.length, activeTemplate?.frontDesign, activeTemplate?.backDesign, activePreviewSideIdx]);
 
+  // Shared routine: substitute {Field} text placeholders and render the {Photo}
+  // frame for a given student. Runs on a canvas that already has the template
+  // design loaded at full resolution (via loadTemplateToCanvas).
+  const applyStudentToCanvas = async (canvas: fabric.Canvas, student: Student) => {
+    const objects = [...canvas.getObjects()];
+    const studentData = JSON.parse(student.data || '{}');
+
+    for (const obj of objects) {
+      // Substitute text placeholders
+      if (obj.type === 'textbox' || obj.type === 'text' || obj.type === 'i-text') {
+        const textObj = obj as fabric.Textbox;
+        let val = textObj.text || '';
+
+        const matches = val.match(/\{[^}]+\}/g);
+        if (matches) {
+          matches.forEach(m => {
+            const colKey = mappedFields[m] || m.replace('{', '').replace('}', '');
+            const replacement = studentData[colKey] || '';
+            val = val.replace(m, replacement);
+          });
+          textObj.set('text', val);
+        }
+      }
+
+      // Render photo
+      const isPhoto = (obj as any).name === '{Photo}' ||
+                      (obj instanceof fabric.Group && (obj as fabric.Group).getObjects().some(o => (o as any).text === '{Photo}' || (o as any).name === '{Photo}'));
+      if (isPhoto && student.photoPath) {
+        let left = obj.left;
+        let top = obj.top;
+        let width = obj.width * obj.scaleX!;
+        let height = obj.height * obj.scaleY!;
+
+        let photoShape = (obj as any).photoShape || 'rect';
+        let rx = (obj as any).photoRx !== undefined ? (obj as any).photoRx : 8;
+        let ry = (obj as any).photoRy !== undefined ? (obj as any).photoRy : 8;
+        let stroke = (obj as any).photoStroke || '#0284c7';
+        let strokeWidth = (obj as any).photoStrokeWidth !== undefined ? (obj as any).photoStrokeWidth : 2;
+
+        if (obj instanceof fabric.Group) {
+          const rectObj = obj.getObjects().find(o => o instanceof fabric.Rect || o instanceof fabric.Circle);
+          if (rectObj) {
+            width = rectObj.width * rectObj.scaleX! * obj.scaleX!;
+            height = rectObj.height * rectObj.scaleY! * obj.scaleY!;
+          }
+        }
+
+        try {
+          // Load with crossOrigin so the canvas is not tainted and can be exported.
+          const img = await fabric.Image.fromURL(
+            await getSafePhotoUrl(student.photoPath),
+            { crossOrigin: 'anonymous' }
+          );
+          const scale = Math.max(width / img.width!, height / img.height!);
+
+          let clip;
+          let borderObj;
+
+          if (photoShape === 'circle') {
+            const radius = Math.min(width, height) / 2;
+            clip = new fabric.Circle({
+              left: left,
+              top: top,
+              radius: radius,
+              absolutePositioned: true
+            });
+            if (strokeWidth > 0) {
+              borderObj = new fabric.Circle({
+                left: left,
+                top: top,
+                radius: radius - strokeWidth / 2,
+                fill: 'transparent',
+                stroke: stroke,
+                strokeWidth: strokeWidth,
+                selectable: false,
+                evented: false
+              });
+            }
+          } else {
+            clip = new fabric.Rect({
+              left: left,
+              top: top,
+              width: width,
+              height: height,
+              rx: rx * obj.scaleX!,
+              ry: ry * obj.scaleY!,
+              absolutePositioned: true
+            });
+            if (strokeWidth > 0) {
+              borderObj = new fabric.Rect({
+                left: left,
+                top: top,
+                width: width,
+                height: height,
+                rx: rx * obj.scaleX!,
+                ry: ry * obj.scaleY!,
+                fill: 'transparent',
+                stroke: stroke,
+                strokeWidth: strokeWidth,
+                selectable: false,
+                evented: false
+              });
+            }
+          }
+
+          img.set({
+            left: left + (width - img.width! * scale) / 2,
+            top: top + (height - img.height! * scale) / 2,
+            scaleX: scale,
+            scaleY: scale,
+            clipPath: clip
+          });
+
+          canvas.remove(obj);
+          canvas.add(img);
+          if (borderObj) {
+            canvas.add(borderObj);
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      }
+    }
+  };
+
   const renderPreview = async (student: Student | undefined, sideIdx: number) => {
     const canvas = fabricPreviewRef.current;
     if (!canvas || !activeTemplate || !student) return;
 
-    canvas.clear();
-    canvas.backgroundColor = '#1e1e24';
-
     const designs = getDesignsArray(activeTemplate);
     const design = designs[sideIdx] || '{}';
-    if (!design || design === '{}') {
-      canvas.renderAll();
-      return;
-    }
+
+    // Load the template exactly like the designer does, scaled down to fit the
+    // preview area (displayScale * zoom). This keeps the preview identical to
+    // the design and to the exported card.
+    const effectiveScale = displayScale * zoom;
+    await loadTemplateToCanvas(canvas, design, cardW, cardH, {
+      isPreview: true,
+      displayScale: effectiveScale
+    });
+    if (fabricPreviewRef.current !== canvas) return;
 
     try {
-      const parsed = JSON.parse(design);
-      await canvas.loadFromJSON(parsed);
-      if (fabricPreviewRef.current !== canvas) return;
-      await document.fonts.ready;
-      if (fabricPreviewRef.current !== canvas) return;
-
-      // Auto crop outer side of card
-      canvas.clipPath = new fabric.Rect({
-        left: 0,
-        top: 0,
-        width: canvas.width,
-        height: canvas.height,
-        absolutePositioned: true
-      });
-      
-      // Substitute placeholders
-      const objects = canvas.getObjects();
-      const studentData = JSON.parse(student.data || '{}');
-
-      for (const obj of objects) {
-        // Substitute text placeholders
-        if (obj.type === 'textbox' || obj.type === 'text' || obj.type === 'i-text') {
-          const textObj = obj as fabric.Textbox;
-          let val = textObj.text || '';
-          
-          const matches = val.match(/\{[^}]+\}/g);
-          if (matches) {
-            matches.forEach(m => {
-              const colKey = mappedFields[m] || m.replace('{', '').replace('}', '');
-              const replacement = studentData[colKey] || '';
-              val = val.replace(m, replacement);
-            });
-            textObj.set('text', val);
-          }
-        }
-
-        // Render photo
-        const isPhoto = (obj as any).name === '{Photo}' || 
-                        (obj instanceof fabric.Group && (obj as fabric.Group).getObjects().some(o => (o as any).text === '{Photo}' || (o as any).name === '{Photo}'));
-        if (isPhoto && student.photoPath) {
-          let left = obj.left;
-          let top = obj.top;
-          let width = obj.width * obj.scaleX!;
-          let height = obj.height * obj.scaleY!;
-          
-          let photoShape = (obj as any).photoShape || 'rect';
-          let rx = (obj as any).photoRx !== undefined ? (obj as any).photoRx : 8;
-          let ry = (obj as any).photoRy !== undefined ? (obj as any).photoRy : 8;
-          let stroke = (obj as any).photoStroke || '#0284c7';
-          let strokeWidth = (obj as any).photoStrokeWidth !== undefined ? (obj as any).photoStrokeWidth : 2;
-
-          if (obj instanceof fabric.Group) {
-            const rectObj = obj.getObjects().find(o => o instanceof fabric.Rect || o instanceof fabric.Circle);
-            if (rectObj) {
-              width = rectObj.width * rectObj.scaleX! * obj.scaleX!;
-              height = rectObj.height * rectObj.scaleY! * obj.scaleY!;
-            }
-          }
-
-          try {
-            const normalizedPath = student.photoPath.replace(/\\/g, '/');
-            const localPhotoUrl = `local-photo://load/${normalizedPath}`;
-            const img = await fabric.Image.fromURL(localPhotoUrl);
-              const scale = Math.max(width / img.width!, height / img.height!);
-              
-              let clip;
-              let borderObj;
-
-              if (photoShape === 'circle') {
-                const radius = Math.min(width, height) / 2;
-                clip = new fabric.Circle({
-                  left: left,
-                  top: top,
-                  radius: radius,
-                  absolutePositioned: true
-                });
-                if (strokeWidth > 0) {
-                  borderObj = new fabric.Circle({
-                    left: left,
-                    top: top,
-                    radius: radius - strokeWidth / 2,
-                    fill: 'transparent',
-                    stroke: stroke,
-                    strokeWidth: strokeWidth,
-                    selectable: false,
-                    evented: false
-                  });
-                }
-              } else {
-                clip = new fabric.Rect({
-                  left: left,
-                  top: top,
-                  width: width,
-                  height: height,
-                  rx: rx * obj.scaleX!,
-                  ry: ry * obj.scaleY!,
-                  absolutePositioned: true
-                });
-                if (strokeWidth > 0) {
-                  borderObj = new fabric.Rect({
-                    left: left,
-                    top: top,
-                    width: width,
-                    height: height,
-                    rx: rx * obj.scaleX!,
-                    ry: ry * obj.scaleY!,
-                    fill: 'transparent',
-                    stroke: stroke,
-                    strokeWidth: strokeWidth,
-                    selectable: false,
-                    evented: false
-                  });
-                }
-              }
-
-              img.set({
-                left: left + (width - img.width! * scale) / 2,
-                top: top + (height - img.height! * scale) / 2,
-                scaleX: scale,
-                scaleY: scale,
-                clipPath: clip
-              });
-
-              canvas.remove(obj);
-              canvas.add(img);
-              if (borderObj) {
-                canvas.add(borderObj);
-              }
-            } catch (e) {
-            console.error(e);
-          }
-        }
-
-
-      }
-
+      await applyStudentToCanvas(canvas, student);
       canvas.renderAll();
     } catch (err) {
       console.error(err);
@@ -314,208 +312,27 @@ export default function BatchPreview() {
     const canvas = fabricHiddenRef.current;
     if (!canvas || !activeTemplate) return null;
 
-    const displayScale = Math.min(550 / cardW, 400 / cardH, 0.6);
-    const scaleMultiplier = 1 / displayScale;
-
     const designs = getDesignsArray(activeTemplate);
     const design = designs[sideIdx] || '{}';
-    const designHash = design.length + '_' + design.substring(0, 20) + '_' + design.substring(Math.max(0, design.length - 20));
-    const cacheKey = `${activeTemplate.id}_${sideIdx}_${designHash}`;
-    const isLoaded = (canvas as any).currentCacheKey === cacheKey;
+    if (!design || design === '{}') return null;
 
-    if (!isLoaded) {
-      canvas.clear();
-      if (!design || design === '{}') return null;
-
-      try {
-        const parsed = JSON.parse(design);
-        await canvas.loadFromJSON(parsed);
-        if (fabricHiddenRef.current !== canvas) return null;
-        await document.fonts.ready;
-        if (fabricHiddenRef.current !== canvas) return null;
-
-        // Force hidden canvas size to high resolution
-        canvas.setDimensions({ width: cardW, height: cardH });
-
-        // Scale all objects from designer scale to high-res scale
-        const objects = canvas.getObjects();
-        objects.forEach(obj => {
-          obj.left *= scaleMultiplier;
-          obj.top *= scaleMultiplier;
-          obj.scaleX! *= scaleMultiplier;
-          obj.scaleY! *= scaleMultiplier;
-          obj.setCoords();
-          
-          if (obj.type === 'textbox' || obj.type === 'text') {
-            (obj as any).originalText = (obj as any).text;
-          }
-        });
-
-        if (canvas.backgroundImage) {
-          const bg = canvas.backgroundImage as fabric.Image;
-          bg.scaleX! *= scaleMultiplier;
-          bg.scaleY! *= scaleMultiplier;
-          bg.left! *= scaleMultiplier;
-          bg.top! *= scaleMultiplier;
-        }
-
-        // Auto crop outer side of card
-        canvas.clipPath = new fabric.Rect({
-          left: 0,
-          top: 0,
-          width: cardW,
-          height: cardH,
-          absolutePositioned: true
-        });
-
-        (canvas as any).currentCacheKey = cacheKey;
-      } catch (err) {
-        console.error(err);
-        return null;
-      }
-    }
-
-    // Now, the canvas has the template loaded and scaled.
-    // 1. Clean up previous dynamic photo objects
-    const objects = canvas.getObjects();
-    const dynamicObjects = objects.filter(obj => (obj as any).isDynamicPhoto);
-    dynamicObjects.forEach(obj => canvas.remove(obj));
-
-    // 2. Restore original text and visibility of original photo placeholders
-    objects.forEach(obj => {
-      if (obj.type === 'textbox' || obj.type === 'text' || obj.type === 'i-text') {
-        if ((obj as any).originalText !== undefined) {
-          (obj as any).text = (obj as any).originalText;
-        }
-      }
-      const isPhoto = (obj as any).name === '{Photo}' || 
-                      (obj instanceof fabric.Group && (obj as fabric.Group).getObjects().some(o => (o as any).text === '{Photo}' || (o as any).name === '{Photo}'));
-      if (isPhoto) {
-        obj.set({ visible: true });
-      }
-    });
-
-    // 3. Process student data
     try {
-      const studentData = JSON.parse(student.data || '{}');
+      // Load the template at full print resolution (1:1, no viewport scaling).
+      // loadTemplateToCanvas normalizes both legacy (designer-scale) and current
+      // hi-res designs, so the exported card matches the designer exactly.
+      await loadTemplateToCanvas(canvas, design, cardW, cardH, { isPreview: false });
+      if (fabricHiddenRef.current !== canvas) return null;
 
-      for (const obj of objects) {
-        if (!obj.visible) continue;
+      // Auto crop to the card bounds
+      canvas.clipPath = new fabric.Rect({
+        left: 0,
+        top: 0,
+        width: cardW,
+        height: cardH,
+        absolutePositioned: true
+      });
 
-        // Substitute text placeholders
-        if (obj.type === 'textbox' || obj.type === 'text' || obj.type === 'i-text') {
-          const textObj = obj as fabric.Textbox;
-          let val = textObj.text || '';
-          const matches = val.match(/\{[^}]+\}/g);
-          if (matches) {
-            matches.forEach(m => {
-              const colKey = mappedFields[m] || m.replace('{', '').replace('}', '');
-              const replacement = studentData[colKey] || '';
-              val = val.replace(m, replacement);
-            });
-            textObj.set('text', val);
-          }
-        }
-
-        // Render photo
-        const isPhoto = (obj as any).name === '{Photo}' || 
-                        (obj instanceof fabric.Group && (obj as fabric.Group).getObjects().some(o => (o as any).text === '{Photo}' || (o as any).name === '{Photo}'));
-        if (isPhoto && student.photoPath) {
-          let left = obj.left;
-          let top = obj.top;
-          let width = obj.width * obj.scaleX!;
-          let height = obj.height * obj.scaleY!;
-          
-          let photoShape = (obj as any).photoShape || 'rect';
-          let rx = (obj as any).photoRx !== undefined ? (obj as any).photoRx : 8;
-          let ry = (obj as any).photoRy !== undefined ? (obj as any).photoRy : 8;
-          let stroke = (obj as any).photoStroke || '#0284c7';
-          let strokeWidth = (obj as any).photoStrokeWidth !== undefined ? (obj as any).photoStrokeWidth : 2;
-
-          if (obj instanceof fabric.Group) {
-            const rectObj = obj.getObjects().find(o => o instanceof fabric.Rect || o instanceof fabric.Circle);
-            if (rectObj) {
-              width = rectObj.width * rectObj.scaleX! * obj.scaleX!;
-              height = rectObj.height * rectObj.scaleY! * obj.scaleY!;
-            }
-          }
-
-          try {
-            const normalizedPath = student.photoPath.replace(/\\/g, '/');
-            const localPhotoUrl = `local-photo://load/${normalizedPath}`;
-            const img = await fabric.Image.fromURL(localPhotoUrl);
-            const scale = Math.max(width / img.width!, height / img.height!);
-            
-            let clip;
-            let borderObj;
-
-            if (photoShape === 'circle') {
-              const radius = Math.min(width, height) / 2;
-              clip = new fabric.Circle({
-                left: left,
-                top: top,
-                radius: radius,
-                absolutePositioned: true
-              });
-              if (strokeWidth > 0) {
-                borderObj = new fabric.Circle({
-                  left: left,
-                  top: top,
-                  radius: radius - strokeWidth / 2,
-                  fill: 'transparent',
-                  stroke: stroke,
-                  strokeWidth: strokeWidth,
-                  selectable: false,
-                  evented: false
-                });
-              }
-            } else {
-              clip = new fabric.Rect({
-                left: left,
-                top: top,
-                width: width,
-                height: height,
-                rx: rx * obj.scaleX!,
-                ry: ry * obj.scaleY!,
-                absolutePositioned: true
-              });
-              if (strokeWidth > 0) {
-                borderObj = new fabric.Rect({
-                  left: left,
-                  top: top,
-                  width: width,
-                  height: height,
-                  rx: rx * obj.scaleX!,
-                  ry: ry * obj.scaleY!,
-                  fill: 'transparent',
-                  stroke: stroke,
-                  strokeWidth: strokeWidth,
-                  selectable: false,
-                  evented: false
-                });
-              }
-            }
-
-            img.set({
-              left: left + (width - img.width! * scale) / 2,
-              top: top + (height - img.height! * scale) / 2,
-              scaleX: scale,
-              scaleY: scale,
-              clipPath: clip
-            });
-
-            obj.set({ visible: false });
-            (img as any).isDynamicPhoto = true;
-            canvas.add(img);
-            if (borderObj) {
-              (borderObj as any).isDynamicPhoto = true;
-              canvas.add(borderObj);
-            }
-          } catch (e) {
-            console.error(e);
-          }
-        }
-      }
+      await applyStudentToCanvas(canvas, student);
 
       canvas.renderAll();
       return canvas.toDataURL({ format: 'png', multiplier: 1 });

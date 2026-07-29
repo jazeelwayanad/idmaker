@@ -9,6 +9,7 @@ export default function PhotoImport() {
 
   // Search/Filter state
   const [searchQuery, setSearchQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'matched' | 'missing'>('all');
   
   // Parse students local data
   const activeStudents = students.map(s => {
@@ -72,9 +73,12 @@ export default function PhotoImport() {
 
   const matchedCount = students.filter(s => s.photoPath).length;
   const missingCount = students.length - matchedCount;
+  const matchRate = students.length ? Math.round((matchedCount / students.length) * 100) : 0;
 
   // Filter students based on search query
   const filteredStudents = activeStudents.filter(student => {
+    if (statusFilter === 'matched' && !student.photoPath) return false;
+    if (statusFilter === 'missing' && student.photoPath) return false;
     if (!searchQuery.trim()) return true;
     const q = searchQuery.toLowerCase();
     const matchedFile = student.photoPath ? student.photoPath.split('\\').pop() || '' : 'none';
@@ -179,14 +183,20 @@ export default function PhotoImport() {
             <h3 className="font-semibold text-zinc-200 mt-1 mb-2">Match Report</h3>
             <p className="text-zinc-500 text-xs">Real-time mapping statistics of images matched to students.</p>
           </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div className="bg-dark-800 p-3 rounded-xl border border-zinc-800 flex flex-col">
-              <span className="text-[10px] text-zinc-500 font-semibold uppercase">Matched</span>
-              <span className="text-xl font-bold text-green-400 mt-1">{matchedCount}</span>
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="bg-dark-800 p-3 rounded-xl border border-zinc-800 flex flex-col">
+                <span className="text-[10px] text-zinc-500 font-semibold uppercase">Matched</span>
+                <span className="text-xl font-bold text-green-400 mt-1">{matchedCount}</span>
+              </div>
+              <div className="bg-dark-800 p-3 rounded-xl border border-zinc-800 flex flex-col">
+                <span className="text-[10px] text-zinc-500 font-semibold uppercase">Needs review</span>
+                <span className="text-xl font-bold text-red-400 mt-1">{missingCount}</span>
+              </div>
             </div>
-            <div className="bg-dark-800 p-3 rounded-xl border border-zinc-800 flex flex-col">
-              <span className="text-[10px] text-zinc-500 font-semibold uppercase">Missing</span>
-              <span className="text-xl font-bold text-red-400 mt-1">{missingCount}</span>
+            <div>
+              <div className="mb-1.5 flex justify-between text-[10px] font-semibold text-zinc-500"><span>Match coverage</span><span className="text-zinc-300">{matchRate}%</span></div>
+              <div className="h-1.5 overflow-hidden rounded-full bg-zinc-800"><div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${matchRate}%` }} /></div>
             </div>
           </div>
         </div>
@@ -219,6 +229,14 @@ export default function PhotoImport() {
                   <X className="w-3.5 h-3.5" />
                 </button>
               )}
+            </div>
+
+            <div className="flex shrink-0 rounded-lg border border-zinc-700/60 bg-dark-800 p-0.5">
+              {(['all', 'matched', 'missing'] as const).map((filter) => (
+                <button key={filter} onClick={() => setStatusFilter(filter)} className={`rounded-md px-2 py-1 text-[10px] font-bold capitalize transition-colors ${statusFilter === filter ? 'bg-primary-500 text-white' : 'text-zinc-500 hover:text-zinc-300'}`}>
+                  {filter === 'all' ? 'All' : filter === 'matched' ? 'Matched' : 'Review'}
+                </button>
+              ))}
             </div>
 
             {/* Column Visibility Dropdown */}
@@ -288,6 +306,9 @@ export default function PhotoImport() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-800/50 text-zinc-300">
+                {filteredStudents.length === 0 && (
+                  <tr><td colSpan={allPhotoColumns.length} className="p-10 text-center text-xs text-zinc-500">No records match this review filter.</td></tr>
+                )}
                 {filteredStudents.slice(0, 50).map((student) => (
                   <tr key={student.id} className="hover:bg-zinc-800/10 transition-colors">
                     {visibleColumns['status'] !== false && (
