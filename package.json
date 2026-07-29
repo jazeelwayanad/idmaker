@@ -17,7 +17,7 @@
   },
   "license": "MIT",
   "dependencies": {
-    "archiver": "^6.0.2",
+    "archiver": "^8.0.0",
     "bwip-js": "^4.5.1",
     "exceljs": "^4.4.0",
     "fabric": "^7.4.0",
@@ -34,7 +34,7 @@
     "zustand": "^5.0.1"
   },
   "devDependencies": {
-    "@types/archiver": "^6.0.2",
+    "@types/archiver": "^8.0.0",
     "@types/node": "^20.17.6",
     "@types/pdfkit": "^0.13.5",
     "@types/qrcode": "^1.5.5",
